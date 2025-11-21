@@ -34,3 +34,17 @@ export interface FootprintStats {
   open: number;
   close: number;
 }
+
+// New Interface for Sequential Bars
+export interface FootprintCandle {
+  id: number;
+  startTime: string;
+  endTime?: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  totalVolume: number;
+  delta: number;
+  priceLevels: PriceLevelData[]; // Processed array, sorted descending
+}

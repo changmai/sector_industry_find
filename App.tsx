@@ -1,54 +1,78 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import Header from './components/Header';
 import FootprintTable from './components/FootprintTable';
 import TickList from './components/TickList';
 import { generateTick } from './services/mockDataService';
-import { Tick, PriceLevelData, FootprintStats, Side } from './types';
+import { Tick, PriceLevelData, FootprintStats, Side, FootprintCandle } from './types';
 import { CONFIG } from './constants';
+import { calculateFootprintIndicators } from './utils';
 
 const App: React.FC = () => {
   const [ticks, setTicks] = useState<Tick[]>([]);
   const [currentPrice, setCurrentPrice] = useState(CONFIG.INITIAL_PRICE);
   
-  // We store the accumulated volume data in a Map for O(1) access by price
-  const [priceMap, setPriceMap] = useState<Map<number, PriceLevelData>>(new Map());
+  // --- Settings ---
+  const [volumeThreshold, setVolumeThreshold] = useState<number>(2000);
+  const [tempThreshold, setTempThreshold] = useState<string>("2000");
 
-  // Derived Stats
-  const stats: FootprintStats = useMemo(() => {
-    if (ticks.length === 0) {
-        return { totalVolume: 0, cvd: 0, high: CONFIG.INITIAL_PRICE, low: CONFIG.INITIAL_PRICE, open: CONFIG.INITIAL_PRICE, close: CONFIG.INITIAL_PRICE };
-    }
-    
-    const totalVolume = ticks.reduce((acc, t) => acc + t.volume, 0);
-    const buyVol = ticks.filter(t => t.side === Side.Buy).reduce((acc, t) => acc + t.volume, 0);
-    const sellVol = ticks.filter(t => t.side === Side.Sell).reduce((acc, t) => acc + t.volume, 0);
-    const prices = ticks.map(t => t.price);
-    
-    return {
-        totalVolume,
-        cvd: buyVol - sellVol,
-        high: Math.max(...prices),
-        low: Math.min(...prices),
-        open: ticks[0].price,
-        close: ticks[ticks.length - 1].price
-    };
-  }, [ticks]);
+  // --- Sequential Footprint State ---
+  const [historyBars, setHistoryBars] = useState<FootprintCandle[]>([]);
+  // We store the active bar's raw map to allow fast O(1) updates
+  const activeBarMap = useRef<Map<number, PriceLevelData>>(new Map());
+  // We store the active bar's metadata separately to avoid re-rendering everything constantly
+  const [activeBarStats, setActiveBarStats] = useState<{
+    id: number;
+    startTime: string;
+    open: number;
+    high: number;
+    low: number;
+    totalVolume: number;
+  }>({
+    id: Date.now(),
+    startTime: new Date().toTimeString().split(' ')[0],
+    open: CONFIG.INITIAL_PRICE,
+    high: CONFIG.INITIAL_PRICE,
+    low: CONFIG.INITIAL_PRICE,
+    totalVolume: 0
+  });
 
-  // Core Data Processing Loop
+  // --- Derived Stats for Header ---
+  const headerStats: FootprintStats = useMemo(() => {
+     if (ticks.length === 0) return { totalVolume: 0, cvd: 0, high: 0, low: 0, open: 0, close: 0 };
+     // Global stats for the session
+     const totalVol = ticks.reduce((acc, t) => acc + t.volume, 0);
+     const buyVol = ticks.filter(t => t.side === Side.Buy).reduce((acc, t) => acc + t.volume, 0);
+     const sellVol = ticks.filter(t => t.side === Side.Sell).reduce((acc, t) => acc + t.volume, 0);
+     
+     return {
+         totalVolume: totalVol,
+         cvd: buyVol - sellVol,
+         high: Math.max(...ticks.map(t => t.price)),
+         low: Math.min(...ticks.map(t => t.price)),
+         open: ticks[ticks.length - 1].price, // Oldest tick
+         close: currentPrice
+     };
+  }, [ticks, currentPrice]);
+
+  // --- Main Tick Loop ---
   useEffect(() => {
     const interval = setInterval(() => {
       const newTick = generateTick();
-      
+      const nowStr = new Date().toTimeString().split(' ')[0];
+
       setCurrentPrice(newTick.price);
       
+      // Update Tape
       setTicks(prevTicks => {
         const updated = [newTick, ...prevTicks];
-        return updated.slice(0, 500); // Keep last 500 for the list
+        return updated.slice(0, 200); // Limit tape history
       });
 
-      setPriceMap((prevMap: Map<number, PriceLevelData>) => {
-        const newMap = new Map<number, PriceLevelData>(prevMap);
-        const level: PriceLevelData = newMap.get(newTick.price) || {
+      // --- Footprint Bar Logic ---
+      
+      // 1. Update Active Bar Map
+      const currentMap = activeBarMap.current;
+      const level: PriceLevelData = currentMap.get(newTick.price) || {
           price: newTick.price,
           buyVolume: 0,
           sellVolume: 0,
@@ -60,138 +84,152 @@ const App: React.FC = () => {
           stackedImbalanceSell: false,
           isPOC: false,
           isUnfinished: false
-        };
+      };
 
-        // Update Volumes
-        if (newTick.side === Side.Buy) {
-            level.buyVolume += newTick.volume;
-        } else {
-            level.sellVolume += newTick.volume;
+      if (newTick.side === Side.Buy) level.buyVolume += newTick.volume;
+      else level.sellVolume += newTick.volume;
+      
+      level.totalVolume += newTick.volume;
+      level.delta = level.buyVolume - level.sellVolume;
+      currentMap.set(newTick.price, level);
+
+      // 2. Update Active Bar Stats & Check Rotation
+      setActiveBarStats(prev => {
+        const newTotalVol = prev.totalVolume + newTick.volume;
+        const newHigh = Math.max(prev.high, newTick.price);
+        const newLow = Math.min(prev.low, newTick.price);
+
+        // --- ROTATION TRIGGER ---
+        if (newTotalVol >= volumeThreshold) {
+             // A. Finalize Current Bar
+             const processedLevels = calculateFootprintIndicators(currentMap);
+             const finishedBar: FootprintCandle = {
+                 id: prev.id,
+                 startTime: prev.startTime,
+                 endTime: nowStr,
+                 open: prev.open,
+                 close: newTick.price,
+                 high: newHigh,
+                 low: newLow,
+                 totalVolume: newTotalVol,
+                 delta: processedLevels.reduce((acc, l) => acc + l.delta, 0),
+                 priceLevels: processedLevels
+             };
+
+             // B. Push to History (Max 20)
+             setHistoryBars(prevHistory => {
+                 const newHistory = [...prevHistory, finishedBar];
+                 return newHistory.slice(-20); // Keep last 20
+             });
+
+             // C. Reset for New Bar
+             activeBarMap.current = new Map(); // Clear map
+             
+             // Initialize next bar with the SAME tick price as open (gapless in sim)
+             return {
+                 id: Date.now(),
+                 startTime: nowStr,
+                 open: newTick.price,
+                 high: newTick.price,
+                 low: newTick.price,
+                 totalVolume: 0 
+             };
         }
-        level.totalVolume += newTick.volume;
-        level.delta = level.buyVolume - level.sellVolume;
-        
-        newMap.set(newTick.price, level);
-        return newMap;
+
+        // Continue current bar
+        return {
+            ...prev,
+            high: newHigh,
+            low: newLow,
+            totalVolume: newTotalVol
+        };
       });
 
     }, CONFIG.TICK_RATE_MS);
 
     return () => clearInterval(interval);
-  }, []);
+  }, [volumeThreshold]); // Re-create interval if threshold changes
 
-  // Transformation for Rendering: Calculate POC, Imbalances, and Advanced Indicators
-  const footprintData = useMemo(() => {
-    const rawData: PriceLevelData[] = Array.from(priceMap.values());
-    if (rawData.length === 0) return [];
+  // Prepare Active Bar Object for Rendering
+  const activeBarCandle: FootprintCandle | null = useMemo(() => {
+      if (activeBarStats.totalVolume === 0 && activeBarMap.current.size === 0) return null;
+      
+      return {
+          id: activeBarStats.id,
+          startTime: activeBarStats.startTime,
+          open: activeBarStats.open,
+          close: currentPrice,
+          high: activeBarStats.high,
+          low: activeBarStats.low,
+          totalVolume: activeBarStats.totalVolume,
+          delta: Array.from(activeBarMap.current.values()).reduce((acc, v) => acc + v.delta, 0),
+          // Calculate indicators on the fly for the active bar
+          priceLevels: calculateFootprintIndicators(activeBarMap.current) 
+      };
+  }, [activeBarStats, currentPrice]); // Updates on every tick roughly
 
-    // 1. Find POC (Max Volume)
-    const maxVol = Math.max(...rawData.map((d) => d.totalVolume));
-    
-    // 2. First Pass: Calculate Basic Diagonal Imbalances
-    let processed = rawData.map((item) => {
-        const priceStep = 100; 
-        
-        const bidAtP = item.sellVolume; 
-        const askAtP = item.buyVolume;
-        
-        // Check for Sell Imbalance (Bid P vs Ask P+1)
-        const levelAbove = priceMap.get(item.price + priceStep);
-        const askAbove = levelAbove ? levelAbove.buyVolume : 0;
-        const isSellImbalance = (askAbove > 0) && (bidAtP >= askAbove * CONFIG.IMBALANCE_RATIO);
-        
-        // Check for Buy Imbalance (Ask P vs Bid P-1)
-        const levelBelow = priceMap.get(item.price - priceStep);
-        const bidBelow = levelBelow ? levelBelow.sellVolume : 0;
-        const isBuyImbalance = (bidBelow > 0) && (askAtP >= bidBelow * CONFIG.IMBALANCE_RATIO);
-
-        return {
-            ...item,
-            isPOC: item.totalVolume === maxVol,
-            imbalanceBuy: isBuyImbalance,
-            imbalanceSell: isSellImbalance,
-            // Reset advanced flags for second pass
-            stackedImbalanceBuy: false,
-            stackedImbalanceSell: false,
-            isUnfinished: false
-        };
-    });
-
-    // Sort by price descending (High to Low) for easier sequential checking
-    processed.sort((a, b) => b.price - a.price);
-
-    // 3. Second Pass: Stacked Imbalances & Unfinished Business
-    for (let i = 0; i < processed.length; i++) {
-        // --- Stacked Imbalance Logic (3+ consecutive) ---
-        // Check Next 2 rows (since we sorted High to Low, "next" is "below" in price)
-        if (i <= processed.length - 3) {
-            // Check Buy Stack
-            if (processed[i].imbalanceBuy && processed[i+1].imbalanceBuy && processed[i+2].imbalanceBuy) {
-                processed[i].stackedImbalanceBuy = true;
-                processed[i+1].stackedImbalanceBuy = true;
-                processed[i+2].stackedImbalanceBuy = true;
-            }
-            // Check Sell Stack
-            if (processed[i].imbalanceSell && processed[i+1].imbalanceSell && processed[i+2].imbalanceSell) {
-                processed[i].stackedImbalanceSell = true;
-                processed[i+1].stackedImbalanceSell = true;
-                processed[i+2].stackedImbalanceSell = true;
-            }
-        }
-
-        // --- Unfinished Business Logic (High/Low) ---
-        // Check High (Index 0)
-        if (i === 0) {
-             // If both sides have volume, it's unfinished (magnet)
-             if (processed[i].buyVolume > 0 && processed[i].sellVolume > 0) {
-                 processed[i].isUnfinished = true;
-             }
-        }
-        // Check Low (Last Index)
-        if (i === processed.length - 1) {
-             if (processed[i].buyVolume > 0 && processed[i].sellVolume > 0) {
-                 processed[i].isUnfinished = true;
-             }
-        }
-    }
-
-    return processed;
-
-  }, [priceMap]);
+  // Handler for Threshold Input
+  const handleThresholdChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+      setTempThreshold(e.target.value);
+  };
+  
+  const applyThreshold = () => {
+      const val = parseInt(tempThreshold, 10);
+      if (!isNaN(val) && val > 0) {
+          setVolumeThreshold(val);
+          // Optional: Force rotate or reset could go here, but we just let the next tick handle it
+      }
+  };
 
   return (
     <div className="h-screen w-screen bg-dark-bg text-white flex flex-col overflow-hidden font-sans selection:bg-gray-700">
-      <Header stats={stats} />
+      <Header stats={headerStats} />
       
       <main className="flex-1 flex overflow-hidden p-2 gap-2">
-        {/* Left Panel: Footprint Analysis (60%) */}
+        {/* Left Panel: Footprint Analysis */}
         <div className="flex-[3] flex flex-col min-w-0">
-            <div className="flex items-center justify-between mb-2 px-1">
-                <h2 className="text-sm font-bold text-gray-300 flex items-center">
-                   <span className="w-2 h-2 rounded-full bg-kr-red mr-2"></span>
-                   Cumulative Footprint (Price Ladder)
-                </h2>
+            <div className="flex items-center justify-between mb-2 px-1 bg-panel-bg p-2 rounded border border-border-color">
+                <div className="flex items-center">
+                    <h2 className="text-sm font-bold text-gray-300 flex items-center mr-4">
+                        <span className="w-2 h-2 rounded-full bg-kr-red mr-2"></span>
+                        Sequential Footprint
+                    </h2>
+                    
+                    {/* Volume Threshold Controls */}
+                    <div className="flex items-center space-x-2 text-xs">
+                        <span className="text-gray-400">Rotation Vol:</span>
+                        <input 
+                            type="number" 
+                            value={tempThreshold}
+                            onChange={handleThresholdChange}
+                            className="bg-gray-800 border border-gray-600 text-white px-2 py-1 rounded w-20 text-center focus:border-kr-blue outline-none"
+                        />
+                        <button 
+                            onClick={applyThreshold}
+                            className="bg-gray-700 hover:bg-gray-600 text-gray-200 px-3 py-1 rounded transition-colors"
+                        >
+                            Apply
+                        </button>
+                        <span className="text-gray-500 ml-2">(Current: {volumeThreshold})</span>
+                    </div>
+                </div>
+
                 <div className="flex space-x-2">
                     <span className="text-[10px] text-gray-500 bg-gray-800 px-2 py-0.5 rounded border border-gray-700">
-                        Imbalance: {CONFIG.IMBALANCE_RATIO * 100}%
-                    </span>
-                    <span className="text-[10px] text-kr-red bg-gray-800 px-2 py-0.5 rounded border border-gray-700 flex items-center">
-                        <div className="w-1.5 h-1.5 bg-kr-red mr-1"></div> Buy Zone
-                    </span>
-                    <span className="text-[10px] text-kr-blue bg-gray-800 px-2 py-0.5 rounded border border-gray-700 flex items-center">
-                        <div className="w-1.5 h-1.5 bg-kr-blue mr-1"></div> Sell Zone
+                        History: {historyBars.length}/20
                     </span>
                 </div>
             </div>
-            <FootprintTable data={footprintData} currentPrice={currentPrice} />
+            
+            <FootprintTable bars={historyBars} activeBar={activeBarCandle} />
         </div>
 
-        {/* Right Panel: Tick List (40%) */}
-        <div className="flex-[2] flex flex-col min-w-0">
-             <div className="flex items-center justify-between mb-2 px-1">
+        {/* Right Panel: Tick List */}
+        <div className="flex-[1.5] flex flex-col min-w-0">
+             <div className="flex items-center justify-between mb-2 px-1 py-2 bg-panel-bg rounded border border-border-color">
                 <h2 className="text-sm font-bold text-gray-300 flex items-center">
                    <span className="w-2 h-2 rounded-full bg-highlight mr-2"></span>
-                   Tape (Time & Sales)
+                   Tape
                 </h2>
             </div>
             <TickList ticks={ticks} />
