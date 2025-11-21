@@ -12,21 +12,33 @@ const FootprintTable: React.FC<FootprintTableProps> = ({ data, currentPrice }) =
   const scrollRef = useRef<HTMLDivElement>(null);
   const isAutoScroll = useRef(true);
 
-  // Data is already sorted descending from App.tsx, but we sort again to be safe or if we change view
+  // Data is already sorted descending from App.tsx
   const sortedData = useMemo(() => {
     return [...data].sort((a, b) => b.price - a.price);
   }, [data]);
 
-  // Calculate max volume for relative profile sizing
-  const maxVolume = useMemo(() => {
+  // 1. Max Volume for Profile Bar (Total Volume)
+  const maxTotalVolume = useMemo(() => {
     if (data.length === 0) return 1;
     return Math.max(...data.map(d => d.totalVolume));
+  }, [data]);
+
+  // 2. Max Volume for Heatmap (Single Cell Volume)
+  // We find the largest single buy or sell volume in the visible range to scale the opacity.
+  const maxCellVolume = useMemo(() => {
+    if (data.length === 0) return 1;
+    let max = 0;
+    for (const d of data) {
+        if (d.buyVolume > max) max = d.buyVolume;
+        if (d.sellVolume > max) max = d.sellVolume;
+    }
+    return max;
   }, [data]);
 
   // Auto-scroll to current price on initial load
   useEffect(() => {
     if (scrollRef.current && isAutoScroll.current && sortedData.length > 0) {
-      // Simplified auto-scroll logic
+      // Simplified auto-scroll logic could go here
     }
   }, [sortedData, currentPrice]);
 
@@ -54,7 +66,7 @@ const FootprintTable: React.FC<FootprintTableProps> = ({ data, currentPrice }) =
       </div>
 
       {/* Table Body */}
-      <div className="overflow-y-auto flex-1 relative" ref={scrollRef}>
+      <div className="overflow-y-auto flex-1 relative bg-[#1a1a1a]" ref={scrollRef}>
         {sortedData.length === 0 && (
           <div className="absolute inset-0 flex items-center justify-center text-gray-600">
             Waiting for tick data...
@@ -66,7 +78,8 @@ const FootprintTable: React.FC<FootprintTableProps> = ({ data, currentPrice }) =
             key={row.price} 
             row={row} 
             isCurrent={row.price === currentPrice} 
-            maxVolume={maxVolume}
+            maxTotalVolume={maxTotalVolume}
+            maxCellVolume={maxCellVolume}
             isHigh={index === 0}
             isLow={index === sortedData.length - 1}
           />
@@ -78,8 +91,11 @@ const FootprintTable: React.FC<FootprintTableProps> = ({ data, currentPrice }) =
              <span className="flex items-center"><Magnet className="w-3 h-3 mr-1 text-gray-400" /> Unfinished</span>
              <span className="flex items-center"><Ban className="w-3 h-3 mr-1 text-gray-400" /> Zero Print</span>
          </div>
-         <div className="flex space-x-3">
-             <span>Stacked Imb: <span className="text-kr-red">Buy</span> / <span className="text-kr-blue">Sell</span></span>
+         <div className="flex space-x-3 items-center">
+             <span className="flex items-center mr-2">
+                <div className="w-2 h-2 border border-yellow-400 mr-1"></div> Imbalance
+             </span>
+             <span>Stacked: <span className="text-kr-red">Buy</span> / <span className="text-kr-blue">Sell</span></span>
          </div>
       </div>
     </div>
@@ -89,25 +105,44 @@ const FootprintTable: React.FC<FootprintTableProps> = ({ data, currentPrice }) =
 interface RowProps {
     row: PriceLevelData;
     isCurrent: boolean;
-    maxVolume: number;
+    maxTotalVolume: number;
+    maxCellVolume: number;
     isHigh: boolean;
     isLow: boolean;
 }
 
-const FootprintRow: React.FC<RowProps> = ({ row, isCurrent, maxVolume, isHigh, isLow }) => {
-  const profileWidth = maxVolume > 0 ? (row.totalVolume / maxVolume) * 100 : 0;
-  
+const FootprintRow: React.FC<RowProps> = ({ row, isCurrent, maxTotalVolume, maxCellVolume, isHigh, isLow }) => {
+  // Profile Bar Calculation
+  const profileWidth = maxTotalVolume > 0 ? (row.totalVolume / maxTotalVolume) * 100 : 0;
+
+  // Heatmap Opacity Calculation (Min 0.05 to see grid, Max 0.9 for text readability)
+  // Using a slight curve (Math.sqrt) to make smaller volumes more visible
+  const getOpacity = (vol: number) => {
+      if (vol === 0) return 0;
+      const ratio = vol / maxCellVolume;
+      // Use square root to boost visibility of lower volumes, cap at 0.85
+      return Math.min(0.85, Math.max(0.05, Math.sqrt(ratio))); 
+  };
+
+  const sellOpacity = getOpacity(row.sellVolume);
+  const buyOpacity = getOpacity(row.buyVolume);
+
   return (
     <div className={`grid grid-cols-12 gap-px text-xs font-mono relative group hover:bg-gray-800/50 transition-colors ${isCurrent ? 'bg-gray-800' : ''}`}>
       
-      {/* Bid Volume (Sell Side) */}
-      <div className={`col-span-3 py-1 px-2 text-right relative flex items-center justify-end border-b border-gray-800/50 ${row.imbalanceSell ? 'bg-kr-blue/30 font-bold text-white' : 'text-kr-blue'}`}>
+      {/* Bid Volume (Sell Side) - Heatmap Blue */}
+      <div 
+        className={`col-span-3 py-1 px-2 text-right relative flex items-center justify-end border-b border-gray-800/50 text-gray-200
+            ${row.imbalanceSell ? 'border-2 border-yellow-400 font-black z-10' : ''}
+        `}
+        style={{ backgroundColor: `rgba(77, 148, 255, ${sellOpacity})` }} // Blue Heatmap
+      >
         {/* Stacked Imbalance Indicator (Sell) */}
         {row.stackedImbalanceSell && (
-            <div className="absolute inset-y-0 right-0 w-1 bg-kr-blue z-20"></div>
+            <div className="absolute inset-y-0 right-0 w-1.5 bg-kr-blue z-20 border-l border-white/20"></div>
         )}
-        {row.imbalanceSell && <span className="absolute left-1 text-[9px] text-kr-blue opacity-80">IMB</span>}
-        {row.sellVolume.toLocaleString()}
+        {row.imbalanceSell && <span className="absolute left-1 text-[8px] text-yellow-400 font-bold opacity-90">IMB</span>}
+        <span className="relative z-10 drop-shadow-sm">{row.sellVolume.toLocaleString()}</span>
       </div>
 
       {/* Price */}
@@ -117,15 +152,15 @@ const FootprintRow: React.FC<RowProps> = ({ row, isCurrent, maxVolume, isHigh, i
         )}
         {row.isPOC && (
             <div className={`absolute inset-0 border-2 ${COLORS.POC_BORDER} pointer-events-none flex items-start justify-start`}>
-                <div className="bg-highlight text-black text-[8px] px-0.5 leading-none">POC</div>
+                <div className="bg-highlight text-black text-[8px] px-0.5 leading-none font-bold">POC</div>
             </div>
         )}
         
         {/* Auction Status Indicators (High/Low) */}
         {row.isUnfinished && (isHigh || isLow) && (
             <div className="absolute -right-6 top-0 bottom-0 flex items-center z-30">
-                <div className="bg-gray-800 text-gray-400 border border-gray-600 text-[9px] px-1 rounded flex items-center whitespace-nowrap shadow-lg">
-                    <Magnet className="w-3 h-3 mr-1" /> Unfinished
+                <div className="bg-gray-800 text-gray-300 border border-gray-500 text-[9px] px-1 rounded flex items-center whitespace-nowrap shadow-lg shadow-black/50">
+                    <Magnet className="w-3 h-3 mr-1 text-highlight" /> Unfinished
                 </div>
             </div>
         )}
@@ -140,14 +175,19 @@ const FootprintRow: React.FC<RowProps> = ({ row, isCurrent, maxVolume, isHigh, i
         {row.price.toLocaleString()}
       </div>
 
-      {/* Ask Volume (Buy Side) */}
-      <div className={`col-span-3 py-1 px-2 text-left relative flex items-center justify-start border-b border-gray-800/50 ${row.imbalanceBuy ? 'bg-kr-red/30 font-bold text-white' : 'text-kr-red'}`}>
+      {/* Ask Volume (Buy Side) - Heatmap Red */}
+      <div 
+        className={`col-span-3 py-1 px-2 text-left relative flex items-center justify-start border-b border-gray-800/50 text-gray-200
+            ${row.imbalanceBuy ? 'border-2 border-yellow-400 font-black z-10' : ''}
+        `}
+        style={{ backgroundColor: `rgba(255, 77, 77, ${buyOpacity})` }} // Red Heatmap
+      >
         {/* Stacked Imbalance Indicator (Buy) */}
         {row.stackedImbalanceBuy && (
-            <div className="absolute inset-y-0 left-0 w-1 bg-kr-red z-20"></div>
+            <div className="absolute inset-y-0 left-0 w-1.5 bg-kr-red z-20 border-r border-white/20"></div>
         )}
-        {row.buyVolume.toLocaleString()}
-        {row.imbalanceBuy && <span className="absolute right-1 text-[9px] text-kr-red opacity-80">IMB</span>}
+        <span className="relative z-10 drop-shadow-sm">{row.buyVolume.toLocaleString()}</span>
+        {row.imbalanceBuy && <span className="absolute right-1 text-[8px] text-yellow-400 font-bold opacity-90">IMB</span>}
       </div>
 
       {/* Delta */}
@@ -155,7 +195,7 @@ const FootprintRow: React.FC<RowProps> = ({ row, isCurrent, maxVolume, isHigh, i
         {row.delta > 0 ? '+' : ''}{row.delta.toLocaleString()}
       </div>
       
-      {/* Volume Profile */}
+      {/* Volume Profile (Relative to Total Max) */}
       <div className="col-span-2 relative border-l border-b border-gray-800/50 h-full min-h-[24px]">
         <div 
             className={`absolute top-1 bottom-1 left-0 opacity-30 ${row.delta > 0 ? 'bg-kr-red' : 'bg-kr-blue'}`}
