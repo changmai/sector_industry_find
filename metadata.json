@@ -1,0 +1,5 @@
+{
+  "name": "LS Footprint Pro (Sim)",
+  "description": "A high-fidelity, dark-mode financial analysis tool visualizing real-time Price Footprints, Imbalances, and Order Flow based on Korean stock market conventions.",
+  "requestFramePermissions": []
+}
