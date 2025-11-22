@@ -7,34 +7,47 @@ import { generateTick } from './services/mockDataService';
 import { Tick, PriceLevelData, FootprintStats, Side, FootprintCandle } from './types';
 import { CONFIG } from './constants';
 import { calculateFootprintIndicators } from './utils';
+import { Clock, BarChart2, MoveVertical } from 'lucide-react';
+
+type RotationMode = 'VOLUME' | 'TIME' | 'RANGE';
 
 const App: React.FC = () => {
   const [ticks, setTicks] = useState<Tick[]>([]);
   const [currentPrice, setCurrentPrice] = useState(CONFIG.INITIAL_PRICE);
   
-  // --- Settings ---
-  const [volumeThreshold, setVolumeThreshold] = useState<number>(2000);
-  const [tempThreshold, setTempThreshold] = useState<string>("2000");
+  // --- Rotation Settings ---
+  const [rotationMode, setRotationMode] = useState<RotationMode>('VOLUME');
+  
+  // Thresholds for each mode
+  const [thresholds, setThresholds] = useState({
+    VOLUME: 2000,
+    TIME: 30, // seconds
+    RANGE: 10 // ticks (e.g., 10 * 100 = 1000 price range)
+  });
+  
+  // Temp input state for UI
+  const [tempInput, setTempInput] = useState<string>("2000");
 
   // --- Sequential Footprint State ---
   const [historyBars, setHistoryBars] = useState<FootprintCandle[]>([]);
-  // We store the active bar's raw map to allow fast O(1) updates
   const activeBarMap = useRef<Map<number, PriceLevelData>>(new Map());
   
   // Metadata for the active bar
   const [activeBarStats, setActiveBarStats] = useState<{
     id: number;
     startTime: string;
+    timestamp: number; // Creation timestamp (ms) for Time-based rotation
     open: number;
     high: number;
     low: number;
     totalVolume: number;
-    currentDelta: number; // Running Cumulative Delta
-    maxDelta: number;     // Highest Running Delta reached
-    minDelta: number;     // Lowest Running Delta reached
+    currentDelta: number;
+    maxDelta: number;
+    minDelta: number;
   }>({
     id: Date.now(),
     startTime: new Date().toTimeString().split(' ')[0],
+    timestamp: Date.now(),
     open: CONFIG.INITIAL_PRICE,
     high: CONFIG.INITIAL_PRICE,
     low: CONFIG.INITIAL_PRICE,
@@ -44,10 +57,14 @@ const App: React.FC = () => {
     minDelta: 0
   });
 
+  // Update temp input when mode changes
+  useEffect(() => {
+    setTempInput(thresholds[rotationMode].toString());
+  }, [rotationMode]);
+
   // --- Derived Stats for Header ---
   const headerStats: FootprintStats = useMemo(() => {
      if (ticks.length === 0) return { totalVolume: 0, cvd: 0, high: 0, low: 0, open: 0, close: 0 };
-     // Global stats for the session
      const totalVol = ticks.reduce((acc, t) => acc + t.volume, 0);
      const buyVol = ticks.filter(t => t.side === Side.Buy).reduce((acc, t) => acc + t.volume, 0);
      const sellVol = ticks.filter(t => t.side === Side.Sell).reduce((acc, t) => acc + t.volume, 0);
@@ -57,12 +74,12 @@ const App: React.FC = () => {
          cvd: buyVol - sellVol,
          high: Math.max(...ticks.map(t => t.price)),
          low: Math.min(...ticks.map(t => t.price)),
-         open: ticks[ticks.length - 1].price, // Oldest tick
+         open: ticks[ticks.length - 1].price, 
          close: currentPrice
      };
   }, [ticks, currentPrice]);
 
-  // --- Calculate Global Y-Axis Range (Synchronization) ---
+  // --- Calculate Global Y-Axis Range ---
   const { globalHigh, globalLow } = useMemo(() => {
     let highs: number[] = [];
     let lows: number[] = [];
@@ -72,7 +89,6 @@ const App: React.FC = () => {
         lows.push(...historyBars.map(b => b.low));
     }
     
-    // Include active bar
     if (activeBarStats.totalVolume > 0) {
         highs.push(activeBarStats.high);
         lows.push(activeBarStats.low);
@@ -85,7 +101,6 @@ const App: React.FC = () => {
     const max = Math.max(...highs);
     const min = Math.min(...lows);
 
-    // Add Padding (2 steps)
     return {
         globalHigh: max + (CONFIG.PRICE_STEP * 2),
         globalLow: min - (CONFIG.PRICE_STEP * 2)
@@ -97,19 +112,19 @@ const App: React.FC = () => {
   useEffect(() => {
     const interval = setInterval(() => {
       const newTick = generateTick();
-      const nowStr = new Date().toTimeString().split(' ')[0];
+      const now = Date.now();
+      const nowStr = new Date(now).toTimeString().split(' ')[0];
 
       setCurrentPrice(newTick.price);
       
-      // Update Tape
       setTicks(prevTicks => {
         const updated = [newTick, ...prevTicks];
-        return updated.slice(0, 200); // Limit tape history
+        return updated.slice(0, 200); 
       });
 
       // --- Footprint Bar Logic ---
       
-      // 1. Update Active Bar Map (Price Levels)
+      // 1. Update Active Bar Map
       const currentMap = activeBarMap.current;
       const level: PriceLevelData = currentMap.get(newTick.price) || {
           price: newTick.price,
@@ -132,8 +147,7 @@ const App: React.FC = () => {
       level.delta = level.buyVolume - level.sellVolume;
       currentMap.set(newTick.price, level);
 
-      // 2. Update Active Bar Stats (Time-Series Accumulation)
-      // Calculate Tick Delta for Running Sum
+      // 2. Update Stats & Check Rotation
       const tickDelta = newTick.side === Side.Buy ? newTick.volume : -newTick.volume;
 
       setActiveBarStats(prev => {
@@ -141,14 +155,27 @@ const App: React.FC = () => {
         const newHigh = Math.max(prev.high, newTick.price);
         const newLow = Math.min(prev.low, newTick.price);
         
-        // Strict Time-Series Running Delta Calculation
         const newCurrentDelta = prev.currentDelta + tickDelta;
         const newMaxDelta = Math.max(prev.maxDelta, newCurrentDelta);
         const newMinDelta = Math.min(prev.minDelta, newCurrentDelta);
 
-        // --- ROTATION TRIGGER ---
-        if (newTotalVol >= volumeThreshold) {
-             // A. Finalize Current Bar
+        // --- ROTATION LOGIC ---
+        let shouldRotate = false;
+
+        if (rotationMode === 'VOLUME') {
+            if (newTotalVol >= thresholds.VOLUME) shouldRotate = true;
+        } 
+        else if (rotationMode === 'TIME') {
+            const elapsedSec = (now - prev.timestamp) / 1000;
+            if (elapsedSec >= thresholds.TIME) shouldRotate = true;
+        }
+        else if (rotationMode === 'RANGE') {
+            const rangeTicks = (newHigh - newLow) / CONFIG.PRICE_STEP;
+            if (rangeTicks >= thresholds.RANGE) shouldRotate = true;
+        }
+
+        if (shouldRotate) {
+             // Finalize Bar
              const processedLevels = calculateFootprintIndicators(currentMap);
              const finishedBar: FootprintCandle = {
                  id: prev.id,
@@ -165,19 +192,18 @@ const App: React.FC = () => {
                  priceLevels: processedLevels
              };
 
-             // B. Push to History (Max 20)
              setHistoryBars(prevHistory => {
                  const newHistory = [...prevHistory, finishedBar];
-                 return newHistory.slice(-20); // Keep last 20
+                 return newHistory.slice(-20); 
              });
 
-             // C. Reset for New Bar
-             activeBarMap.current = new Map(); // Clear map
+             activeBarMap.current = new Map(); // Clear
              
-             // Initialize next bar with 0 delta state
+             // Reset
              return {
-                 id: Date.now(),
+                 id: now,
                  startTime: nowStr,
+                 timestamp: now,
                  open: newTick.price,
                  high: newTick.price,
                  low: newTick.price,
@@ -188,7 +214,6 @@ const App: React.FC = () => {
              };
         }
 
-        // Continue current bar
         return {
             ...prev,
             high: newHigh,
@@ -203,15 +228,11 @@ const App: React.FC = () => {
     }, CONFIG.TICK_RATE_MS);
 
     return () => clearInterval(interval);
-  }, [volumeThreshold]); // Re-create interval if threshold changes
+  }, [rotationMode, thresholds]); // Re-bind when mode/thresholds change
 
-  // Prepare Active Bar Object for Rendering
   const activeBarCandle: FootprintCandle | null = useMemo(() => {
       if (activeBarStats.totalVolume === 0 && activeBarMap.current.size === 0) return null;
-      
-      // Calculate derived indicators on the fly
       const processed = calculateFootprintIndicators(activeBarMap.current);
-
       return {
           id: activeBarStats.id,
           startTime: activeBarStats.startTime,
@@ -227,53 +248,82 @@ const App: React.FC = () => {
       };
   }, [activeBarStats, currentPrice]); 
 
-  // Handler for Threshold Input
   const handleThresholdChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-      setTempThreshold(e.target.value);
+      setTempInput(e.target.value);
   };
   
-  const applyThreshold = () => {
-      const val = parseInt(tempThreshold, 10);
+  const applySettings = () => {
+      const val = parseInt(tempInput, 10);
       if (!isNaN(val) && val > 0) {
-          setVolumeThreshold(val);
+          setThresholds(prev => ({
+              ...prev,
+              [rotationMode]: val
+          }));
       }
   };
+
+  // Helper to get label and icon for current mode
+  const getModeMeta = () => {
+      switch (rotationMode) {
+          case 'VOLUME': return { icon: <BarChart2 className="w-3 h-3 mr-1 text-kr-blue" />, label: 'Volume', unit: 'Vol' };
+          case 'TIME': return { icon: <Clock className="w-3 h-3 mr-1 text-highlight" />, label: 'Time', unit: 'Sec' };
+          case 'RANGE': return { icon: <MoveVertical className="w-3 h-3 mr-1 text-kr-red" />, label: 'Range', unit: 'Ticks' };
+      }
+  };
+  const meta = getModeMeta();
 
   return (
     <div className="h-screen w-screen bg-dark-bg text-white flex flex-col overflow-hidden font-sans selection:bg-gray-700">
       <Header stats={headerStats} />
       
       <main className="flex-1 flex overflow-hidden p-1 gap-1">
-        {/* Left Panel: Footprint Analysis */}
+        {/* Left Panel */}
         <div className="flex-[1] flex flex-col min-w-0">
-            <div className="flex items-center justify-between mb-1 px-1 bg-panel-bg py-1 rounded border border-border-color shrink-0">
-                <div className="flex items-center">
-                    <h2 className="text-xs font-bold text-gray-300 flex items-center mr-4">
-                        <span className="w-2 h-2 rounded-full bg-kr-red mr-2"></span>
-                        Sequential Footprint
-                    </h2>
+            {/* Settings Toolbar */}
+            <div className="flex items-center justify-between mb-1 px-2 bg-panel-bg py-1 rounded border border-border-color shrink-0">
+                <div className="flex items-center space-x-4">
+                    <div className="flex items-center">
+                        <span className="w-2 h-2 rounded-full bg-kr-red mr-2 animate-pulse"></span>
+                        <h2 className="text-xs font-bold text-gray-300">Footprint</h2>
+                    </div>
                     
-                    {/* Volume Threshold Controls */}
+                    <div className="h-4 w-px bg-gray-700"></div>
+
+                    {/* Rotation Controls */}
                     <div className="flex items-center space-x-2 text-[10px]">
-                        <span className="text-gray-400">Rotation Vol:</span>
-                        <input 
-                            type="number" 
-                            value={tempThreshold}
-                            onChange={handleThresholdChange}
-                            className="bg-gray-800 border border-gray-600 text-white px-1 py-0.5 rounded w-14 text-center focus:border-kr-blue outline-none"
-                        />
-                        <button 
-                            onClick={applyThreshold}
-                            className="bg-gray-700 hover:bg-gray-600 text-gray-200 px-2 py-0.5 rounded transition-colors"
+                        <span className="text-gray-400 font-semibold">Type:</span>
+                        <select 
+                            value={rotationMode}
+                            onChange={(e) => setRotationMode(e.target.value as RotationMode)}
+                            className="bg-gray-800 border border-gray-600 text-white text-[10px] px-1 py-0.5 rounded outline-none focus:border-highlight cursor-pointer"
                         >
-                            Set
-                        </button>
-                        <span className="text-gray-500 ml-1">({volumeThreshold})</span>
+                            <option value="VOLUME">Volume</option>
+                            <option value="TIME">Time</option>
+                            <option value="RANGE">Range</option>
+                        </select>
+
+                        <div className="flex items-center pl-2">
+                            {meta.icon}
+                            <span className="text-gray-400 mr-1">{meta.label}:</span>
+                            <input 
+                                type="number" 
+                                value={tempInput}
+                                onChange={handleThresholdChange}
+                                className="bg-gray-800 border border-gray-600 text-white px-1 py-0.5 rounded w-12 text-center focus:border-kr-blue outline-none"
+                            />
+                            <span className="text-gray-500 ml-1 mr-2">{meta.unit}</span>
+                            <button 
+                                onClick={applySettings}
+                                className="bg-gray-700 hover:bg-gray-600 text-gray-200 px-2 py-0.5 rounded transition-colors border border-gray-600"
+                            >
+                                Set
+                            </button>
+                        </div>
                     </div>
                 </div>
 
                 <div className="flex space-x-2">
-                    <span className="text-[10px] text-gray-500 bg-gray-800 px-2 py-0.5 rounded border border-gray-700">
+                    <span className="text-[10px] text-gray-500 bg-gray-800 px-2 py-0.5 rounded border border-gray-700 font-mono">
                         History: {historyBars.length}/20
                     </span>
                 </div>
@@ -287,7 +337,7 @@ const App: React.FC = () => {
             />
         </div>
 
-        {/* Right Panel: Tick List - Fixed width (200px) for tight layout */}
+        {/* Right Panel: Tick List */}
         <div className="w-[200px] flex flex-col min-w-0 flex-none border-l border-border-color">
             <TickList ticks={ticks} />
         </div>
