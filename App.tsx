@@ -170,7 +170,7 @@ const App: React.FC = () => {
     }
 
     // Update state with recalculated bars
-    setHistoryBars(newHistoryBars.slice(-20));
+    setHistoryBars(newHistoryBars);
 
     // Reset active bar
     activeBarMap.current = currentBarMap;
@@ -331,7 +331,7 @@ const App: React.FC = () => {
 
              setHistoryBars(prevHistory => {
                  const newHistory = [...prevHistory, finishedBar];
-                 return newHistory.slice(-20);
+                 return newHistory;
              });
 
              // Clear the map for new bar
@@ -492,7 +492,7 @@ const App: React.FC = () => {
 
                 <div className="flex space-x-2">
                     <span className="text-[10px] text-gray-500 bg-gray-800 px-2 py-0.5 rounded border border-gray-700 font-mono">
-                        History: {historyBars.length}/20
+                        History: {historyBars.length}
                     </span>
                 </div>
             </div>
