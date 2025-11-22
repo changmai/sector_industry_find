@@ -35,23 +35,17 @@ const FootprintBarComponent: React.FC<FootprintBarProps> = ({ candle, isActive, 
   const stripColor = isBullish ? 'bg-kr-red' : 'bg-kr-blue';
   const wickColor = isBullish ? 'bg-kr-red/50' : 'bg-kr-blue/50';
 
-  // Note: priceRows is sorted Descending (High to Low)
-  // So Higher Price = Lower Index
   const highIndex = priceRows.indexOf(candle.high);
   const lowIndex = priceRows.indexOf(candle.low);
-  
-  // For body, we want the range between Open and Close
-  // Since rows are descending, the "Top" visual is the Min Index (Higher Price)
   const openIndex = priceRows.indexOf(candle.open);
   const closeIndex = priceRows.indexOf(candle.close);
   
-  // Safe checks in case price is out of view (though global sync handles this)
   const hasValidIndices = highIndex !== -1 && lowIndex !== -1 && openIndex !== -1 && closeIndex !== -1;
   
   const bodyTopIndex = Math.min(openIndex, closeIndex);
   const bodyBottomIndex = Math.max(openIndex, closeIndex);
   
-  // Update: Wick now covers the FULL height of the High row down to the Bottom of the Low row
+  // Wick covers full height of High row to Bottom of Low row
   const wickTop = highIndex * ROW_HEIGHT;
   const wickHeight = (lowIndex - highIndex + 1) * ROW_HEIGHT;
   
@@ -59,25 +53,25 @@ const FootprintBarComponent: React.FC<FootprintBarProps> = ({ candle, isActive, 
   const bodyHeight = (bodyBottomIndex - bodyTopIndex + 1) * ROW_HEIGHT;
 
   return (
-    // Reduced min-width and added flex-row to accommodate OHLC strip
-    <div className={`flex flex-col min-w-[140px] border-r border-border-color shrink-0 ${isActive ? 'bg-gray-900/50' : 'bg-panel-bg'}`}>
+    // Increased min-width to 120px
+    <div className={`flex flex-col min-w-[120px] border-r border-border-color shrink-0 ${isActive ? 'bg-gray-900/50' : 'bg-panel-bg'}`}>
       
-      {/* Header Info */}
-      <div className="sticky top-0 z-20 bg-inherit border-b border-gray-800 text-[10px] text-center py-1 text-gray-500 font-mono shadow-sm">
+      {/* Header Info - Compact */}
+      <div className="sticky top-0 z-20 bg-inherit border-b border-gray-800 text-[9px] text-center py-0.5 text-gray-500 font-mono shadow-sm leading-tight">
         <div>{candle.startTime}</div>
         <div className={`font-bold ${candle.close > candle.open ? 'text-kr-red' : candle.close < candle.open ? 'text-kr-blue' : 'text-gray-400'}`}>
-            Vol: {candle.totalVolume.toLocaleString()}
+            V: {candle.totalVolume.toLocaleString()}
         </div>
-        <div className="text-[9px] flex justify-center gap-1">
+        <div className="text-[8px] flex justify-center gap-1 opacity-80">
             <span>D: {candle.delta > 0 ? '+' : ''}{candle.delta}</span>
         </div>
       </div>
 
-      {/* Main Content Area: OHLC Strip + Footprint Rows */}
+      {/* Main Content Area */}
       <div className="flex flex-row relative">
           
-          {/* OHLC Strip Column (12px) */}
-          <div className="w-[12px] border-r border-gray-800/30 relative shrink-0 bg-gray-900/20">
+          {/* OHLC Strip Column (8px) */}
+          <div className="w-[8px] border-r border-gray-800/30 relative shrink-0 bg-gray-900/20">
              {hasValidIndices && (
                  <>
                     {/* Wick */}
@@ -87,7 +81,7 @@ const FootprintBarComponent: React.FC<FootprintBarProps> = ({ candle, isActive, 
                     ></div>
                     {/* Body */}
                     <div 
-                        className={`absolute left-[2px] right-[2px] ${stripColor} rounded-[1px] z-10`}
+                        className={`absolute left-[1px] right-[1px] ${stripColor} rounded-[1px] z-10`}
                         style={{ top: bodyTop, height: bodyHeight }}
                     ></div>
                  </>
@@ -121,15 +115,16 @@ const FootprintBarComponent: React.FC<FootprintBarProps> = ({ candle, isActive, 
   );
 };
 
-// Adjusted Grid: 2 (Bid) - 8 (Price) - 2 (Ask)
+// Custom Grid System: 3fr (Bid) | 4fr (Price) | 3fr (Ask)
+// Effectively 30% | 40% | 30%
 const EmptyRow: React.FC<{ price: number }> = ({ price }) => (
     <div 
-        className="grid grid-cols-12 gap-px text-[10px] font-mono border-b border-gray-800/10 opacity-20"
+        className="grid grid-cols-[3fr_4fr_3fr] gap-px text-[9px] font-mono border-b border-gray-800/10 opacity-20"
         style={{ height: ROW_HEIGHT }}
     >
-        <div className="col-span-2"></div>
-        <div className="col-span-8 text-center text-gray-700 flex items-center justify-center">{price}</div>
-        <div className="col-span-2"></div>
+        <div></div>
+        <div className="text-center text-gray-700 flex items-center justify-center tracking-tighter scale-75">{price}</div>
+        <div></div>
     </div>
 );
 
@@ -148,7 +143,7 @@ const Row: React.FC<RowProps> = ({ row, maxTotalVolume, maxCellVolume, isHigh, i
   const getOpacity = (vol: number) => {
       if (vol === 0) return 0;
       const ratio = vol / maxCellVolume;
-      return Math.min(0.85, Math.max(0.05, Math.sqrt(ratio))); 
+      return Math.min(0.85, Math.max(0.1, Math.sqrt(ratio))); 
   };
 
   const sellOpacity = getOpacity(row.sellVolume);
@@ -156,23 +151,24 @@ const Row: React.FC<RowProps> = ({ row, maxTotalVolume, maxCellVolume, isHigh, i
 
   return (
     <div 
-        className={`grid grid-cols-12 gap-px text-[10px] font-mono leading-tight relative border-b border-gray-800/30 items-center ${isCurrent ? 'bg-gray-700/30' : ''}`}
+        className={`grid grid-cols-[3fr_4fr_3fr] gap-px text-[9px] font-mono leading-tight relative border-b border-gray-800/30 items-center ${isCurrent ? 'bg-gray-700/30' : ''}`}
         style={{ height: ROW_HEIGHT }}
     >
       
-      {/* Bid (Sell Side) - Reduced to col-span-2 (approx 16%) */}
+      {/* Bid (Sell Side) - Wider (30%) */}
       <div 
-        className={`col-span-2 px-1 h-full text-right flex items-center justify-end text-gray-200 relative
+        className={`px-0.5 h-full text-right flex items-center justify-end text-gray-200 relative overflow-hidden
             ${row.imbalanceSell ? 'border border-yellow-400 font-bold' : ''}
         `}
         style={{ backgroundColor: `rgba(77, 148, 255, ${sellOpacity})` }}
       >
-        {row.stackedImbalanceSell && <div className="absolute inset-y-0 right-0 w-1 bg-kr-blue z-20"></div>}
+        {row.stackedImbalanceSell && <div className="absolute inset-y-0 right-0 w-0.5 bg-kr-blue z-20"></div>}
+        {/* Scale increased to 90 for visibility */}
         <span className="relative z-10 scale-90 origin-right">{row.sellVolume > 0 ? row.sellVolume : ''}</span>
       </div>
 
-      {/* Price & Profile - Expanded to col-span-8 (approx 66%) */}
-      <div className={`col-span-8 h-full flex items-center justify-center font-medium text-gray-400 relative border-x border-gray-800/30 overflow-hidden
+      {/* Price & Profile - Narrower (40%) */}
+      <div className={`h-full flex items-center justify-center font-medium text-gray-400 relative border-x border-gray-800/30 overflow-hidden
         ${isCurrent ? 'text-white font-bold bg-gray-600' : ''}
       `}>
         {/* Volume Profile Overlay */}
@@ -186,23 +182,25 @@ const Row: React.FC<RowProps> = ({ row, maxTotalVolume, maxCellVolume, isHigh, i
         )}
         
         {row.isUnfinished && (isHigh || isLow) && (
-             <Magnet className="w-3 h-3 text-highlight absolute left-0 ml-0.5 opacity-90 z-20" />
+             <Magnet className="w-2.5 h-2.5 text-highlight absolute left-0 ml-0.5 opacity-90 z-20" />
         )}
         {!row.isUnfinished && (isHigh || isLow) && (
-             <Ban className="w-3 h-3 text-gray-600 absolute left-0 ml-0.5 opacity-90 z-20" />
+             <Ban className="w-2.5 h-2.5 text-gray-600 absolute left-0 ml-0.5 opacity-90 z-20" />
         )}
 
-        <span className="relative z-10">{row.price.toLocaleString()}</span>
+        {/* Price Text Scaled Down to fit narrower column */}
+        <span className="relative z-10 tracking-tighter scale-75">{row.price.toLocaleString()}</span>
       </div>
 
-      {/* Ask (Buy Side) - Reduced to col-span-2 (approx 16%) */}
+      {/* Ask (Buy Side) - Wider (30%) */}
       <div 
-        className={`col-span-2 px-1 h-full text-left flex items-center justify-start text-gray-200 relative
+        className={`px-0.5 h-full text-left flex items-center justify-start text-gray-200 relative overflow-hidden
             ${row.imbalanceBuy ? 'border border-yellow-400 font-bold' : ''}
         `}
         style={{ backgroundColor: `rgba(255, 77, 77, ${buyOpacity})` }}
       >
-        {row.stackedImbalanceBuy && <div className="absolute inset-y-0 left-0 w-1 bg-kr-red z-20"></div>}
+        {row.stackedImbalanceBuy && <div className="absolute inset-y-0 left-0 w-0.5 bg-kr-red z-20"></div>}
+        {/* Scale increased to 90 for visibility */}
         <span className="relative z-10 scale-90 origin-left">{row.buyVolume > 0 ? row.buyVolume : ''}</span>
       </div>
     </div>

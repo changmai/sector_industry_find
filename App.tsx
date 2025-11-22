@@ -209,7 +209,6 @@ const App: React.FC = () => {
       const val = parseInt(tempThreshold, 10);
       if (!isNaN(val) && val > 0) {
           setVolumeThreshold(val);
-          // Optional: Force rotate or reset could go here, but we just let the next tick handle it
       }
   };
 
@@ -217,32 +216,32 @@ const App: React.FC = () => {
     <div className="h-screen w-screen bg-dark-bg text-white flex flex-col overflow-hidden font-sans selection:bg-gray-700">
       <Header stats={headerStats} />
       
-      <main className="flex-1 flex overflow-hidden p-2 gap-2">
+      <main className="flex-1 flex overflow-hidden p-1 gap-1">
         {/* Left Panel: Footprint Analysis */}
-        <div className="flex-[3] flex flex-col min-w-0">
-            <div className="flex items-center justify-between mb-2 px-1 bg-panel-bg p-2 rounded border border-border-color">
+        <div className="flex-[1] flex flex-col min-w-0">
+            <div className="flex items-center justify-between mb-1 px-1 bg-panel-bg py-1 rounded border border-border-color">
                 <div className="flex items-center">
-                    <h2 className="text-sm font-bold text-gray-300 flex items-center mr-4">
+                    <h2 className="text-xs font-bold text-gray-300 flex items-center mr-4">
                         <span className="w-2 h-2 rounded-full bg-kr-red mr-2"></span>
                         Sequential Footprint
                     </h2>
                     
                     {/* Volume Threshold Controls */}
-                    <div className="flex items-center space-x-2 text-xs">
+                    <div className="flex items-center space-x-2 text-[10px]">
                         <span className="text-gray-400">Rotation Vol:</span>
                         <input 
                             type="number" 
                             value={tempThreshold}
                             onChange={handleThresholdChange}
-                            className="bg-gray-800 border border-gray-600 text-white px-2 py-1 rounded w-20 text-center focus:border-kr-blue outline-none"
+                            className="bg-gray-800 border border-gray-600 text-white px-1 py-0.5 rounded w-14 text-center focus:border-kr-blue outline-none"
                         />
                         <button 
                             onClick={applyThreshold}
-                            className="bg-gray-700 hover:bg-gray-600 text-gray-200 px-3 py-1 rounded transition-colors"
+                            className="bg-gray-700 hover:bg-gray-600 text-gray-200 px-2 py-0.5 rounded transition-colors"
                         >
-                            Apply
+                            Set
                         </button>
-                        <span className="text-gray-500 ml-2">(Current: {volumeThreshold})</span>
+                        <span className="text-gray-500 ml-1">({volumeThreshold})</span>
                     </div>
                 </div>
 
@@ -261,14 +260,8 @@ const App: React.FC = () => {
             />
         </div>
 
-        {/* Right Panel: Tick List */}
-        <div className="flex-[1.5] flex flex-col min-w-0">
-             <div className="flex items-center justify-between mb-2 px-1 py-2 bg-panel-bg rounded border border-border-color">
-                <h2 className="text-sm font-bold text-gray-300 flex items-center">
-                   <span className="w-2 h-2 rounded-full bg-highlight mr-2"></span>
-                   Tape
-                </h2>
-            </div>
+        {/* Right Panel: Tick List - Fixed width (200px) for tight layout */}
+        <div className="w-[200px] flex flex-col min-w-0 flex-none border-l border-border-color">
             <TickList ticks={ticks} />
         </div>
       </main>
