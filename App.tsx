@@ -20,7 +20,8 @@ const App: React.FC = () => {
   const [historyBars, setHistoryBars] = useState<FootprintCandle[]>([]);
   // We store the active bar's raw map to allow fast O(1) updates
   const activeBarMap = useRef<Map<number, PriceLevelData>>(new Map());
-  // We store the active bar's metadata separately to avoid re-rendering everything constantly
+  
+  // Metadata for the active bar
   const [activeBarStats, setActiveBarStats] = useState<{
     id: number;
     startTime: string;
@@ -28,13 +29,19 @@ const App: React.FC = () => {
     high: number;
     low: number;
     totalVolume: number;
+    currentDelta: number; // Running Cumulative Delta
+    maxDelta: number;     // Highest Running Delta reached
+    minDelta: number;     // Lowest Running Delta reached
   }>({
     id: Date.now(),
     startTime: new Date().toTimeString().split(' ')[0],
     open: CONFIG.INITIAL_PRICE,
     high: CONFIG.INITIAL_PRICE,
     low: CONFIG.INITIAL_PRICE,
-    totalVolume: 0
+    totalVolume: 0,
+    currentDelta: 0,
+    maxDelta: 0,
+    minDelta: 0
   });
 
   // --- Derived Stats for Header ---
@@ -102,7 +109,7 @@ const App: React.FC = () => {
 
       // --- Footprint Bar Logic ---
       
-      // 1. Update Active Bar Map
+      // 1. Update Active Bar Map (Price Levels)
       const currentMap = activeBarMap.current;
       const level: PriceLevelData = currentMap.get(newTick.price) || {
           price: newTick.price,
@@ -125,11 +132,19 @@ const App: React.FC = () => {
       level.delta = level.buyVolume - level.sellVolume;
       currentMap.set(newTick.price, level);
 
-      // 2. Update Active Bar Stats & Check Rotation
+      // 2. Update Active Bar Stats (Time-Series Accumulation)
+      // Calculate Tick Delta for Running Sum
+      const tickDelta = newTick.side === Side.Buy ? newTick.volume : -newTick.volume;
+
       setActiveBarStats(prev => {
         const newTotalVol = prev.totalVolume + newTick.volume;
         const newHigh = Math.max(prev.high, newTick.price);
         const newLow = Math.min(prev.low, newTick.price);
+        
+        // Strict Time-Series Running Delta Calculation
+        const newCurrentDelta = prev.currentDelta + tickDelta;
+        const newMaxDelta = Math.max(prev.maxDelta, newCurrentDelta);
+        const newMinDelta = Math.min(prev.minDelta, newCurrentDelta);
 
         // --- ROTATION TRIGGER ---
         if (newTotalVol >= volumeThreshold) {
@@ -144,7 +159,9 @@ const App: React.FC = () => {
                  high: newHigh,
                  low: newLow,
                  totalVolume: newTotalVol,
-                 delta: processedLevels.reduce((acc, l) => acc + l.delta, 0),
+                 delta: newCurrentDelta,
+                 maxDelta: newMaxDelta,
+                 minDelta: newMinDelta,
                  priceLevels: processedLevels
              };
 
@@ -157,14 +174,17 @@ const App: React.FC = () => {
              // C. Reset for New Bar
              activeBarMap.current = new Map(); // Clear map
              
-             // Initialize next bar with the SAME tick price as open (gapless in sim)
+             // Initialize next bar with 0 delta state
              return {
                  id: Date.now(),
                  startTime: nowStr,
                  open: newTick.price,
                  high: newTick.price,
                  low: newTick.price,
-                 totalVolume: 0 
+                 totalVolume: 0,
+                 currentDelta: 0,
+                 maxDelta: 0,
+                 minDelta: 0
              };
         }
 
@@ -173,7 +193,10 @@ const App: React.FC = () => {
             ...prev,
             high: newHigh,
             low: newLow,
-            totalVolume: newTotalVol
+            totalVolume: newTotalVol,
+            currentDelta: newCurrentDelta,
+            maxDelta: newMaxDelta,
+            minDelta: newMinDelta
         };
       });
 
@@ -186,6 +209,9 @@ const App: React.FC = () => {
   const activeBarCandle: FootprintCandle | null = useMemo(() => {
       if (activeBarStats.totalVolume === 0 && activeBarMap.current.size === 0) return null;
       
+      // Calculate derived indicators on the fly
+      const processed = calculateFootprintIndicators(activeBarMap.current);
+
       return {
           id: activeBarStats.id,
           startTime: activeBarStats.startTime,
@@ -194,11 +220,12 @@ const App: React.FC = () => {
           high: activeBarStats.high,
           low: activeBarStats.low,
           totalVolume: activeBarStats.totalVolume,
-          delta: Array.from(activeBarMap.current.values()).reduce((acc, v) => acc + v.delta, 0),
-          // Calculate indicators on the fly for the active bar
-          priceLevels: calculateFootprintIndicators(activeBarMap.current) 
+          delta: activeBarStats.currentDelta,
+          maxDelta: activeBarStats.maxDelta,
+          minDelta: activeBarStats.minDelta,
+          priceLevels: processed
       };
-  }, [activeBarStats, currentPrice]); // Updates on every tick roughly
+  }, [activeBarStats, currentPrice]); 
 
   // Handler for Threshold Input
   const handleThresholdChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -219,7 +246,7 @@ const App: React.FC = () => {
       <main className="flex-1 flex overflow-hidden p-1 gap-1">
         {/* Left Panel: Footprint Analysis */}
         <div className="flex-[1] flex flex-col min-w-0">
-            <div className="flex items-center justify-between mb-1 px-1 bg-panel-bg py-1 rounded border border-border-color">
+            <div className="flex items-center justify-between mb-1 px-1 bg-panel-bg py-1 rounded border border-border-color shrink-0">
                 <div className="flex items-center">
                     <h2 className="text-xs font-bold text-gray-300 flex items-center mr-4">
                         <span className="w-2 h-2 rounded-full bg-kr-red mr-2"></span>

@@ -3,7 +3,7 @@ import React, { useRef, useEffect, useMemo } from 'react';
 import { FootprintCandle } from '../types';
 import FootprintBarComponent from './FootprintBarComponent';
 import { Magnet, Ban } from 'lucide-react';
-import { CONFIG } from '../constants';
+import { CONFIG, ROW_HEIGHT } from '../constants';
 
 interface FootprintTableProps {
   bars: FootprintCandle[];
@@ -43,6 +43,10 @@ const FootprintTable: React.FC<FootprintTableProps> = ({ bars, activeBar, global
     }
   }, [bars.length, activeBar, globalHigh, globalLow]); 
 
+  // Calculate exact heights for synchronization
+  const headerHeight = 35;
+  const chartBodyHeight = priceRows.length * ROW_HEIGHT;
+  
   return (
     <div className="flex flex-col h-full bg-panel-bg rounded-lg border border-border-color shadow-xl relative overflow-hidden">
       
@@ -57,8 +61,31 @@ const FootprintTable: React.FC<FootprintTableProps> = ({ bars, activeBar, global
         className="flex-1 overflow-auto custom-scrollbar relative"
       >
          <div className="flex h-full items-stretch min-h-min">
+            
+            {/* Sticky Stats Label Column */}
+            <div className="sticky left-0 z-30 bg-panel-bg border-r border-border-color flex flex-col shrink-0 w-[70px] shadow-md h-fit">
+                {/* Header Placeholder */}
+                <div 
+                    className="border-b border-gray-800 flex items-center justify-center text-[9px] text-gray-500 font-mono"
+                    style={{ height: headerHeight }}
+                >
+                    Stats
+                </div>
+                
+                {/* Body Spacer - Forces labels to push down exactly by the chart height */}
+                <div style={{ height: chartBodyHeight, minHeight: chartBodyHeight }}></div>
+
+                {/* Stats Labels */}
+                <div className="border-t border-gray-700 bg-panel-bg">
+                    <StatLabelRow label="Delta" />
+                    <StatLabelRow label="Max Delta" />
+                    <StatLabelRow label="Min Delta" />
+                    <StatLabelRow label="Volume" />
+                </div>
+            </div>
+
             {bars.length === 0 && !activeBar && (
-                <div className="absolute inset-0 flex items-center justify-center text-gray-600 sticky left-0">
+                <div className="absolute inset-0 flex items-center justify-center text-gray-600 sticky left-0 ml-[70px]">
                     Waiting for market data...
                 </div>
             )}
@@ -103,5 +130,11 @@ const FootprintTable: React.FC<FootprintTableProps> = ({ bars, activeBar, global
     </div>
   );
 };
+
+const StatLabelRow: React.FC<{ label: string }> = ({ label }) => (
+    <div className="flex items-center justify-end pr-2 text-[9px] text-gray-400 font-mono border-b border-gray-800 last:border-b-0 bg-panel-bg" style={{ height: ROW_HEIGHT }}>
+        {label}
+    </div>
+);
 
 export default FootprintTable;

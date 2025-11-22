@@ -1,3 +1,4 @@
+
 export enum Side {
   Buy = 'Buy',
   Sell = 'Sell',
@@ -46,5 +47,7 @@ export interface FootprintCandle {
   close: number;
   totalVolume: number;
   delta: number;
+  maxDelta: number;
+  minDelta: number;
   priceLevels: PriceLevelData[]; // Processed array, sorted descending
 }

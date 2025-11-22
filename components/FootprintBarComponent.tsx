@@ -52,26 +52,37 @@ const FootprintBarComponent: React.FC<FootprintBarProps> = ({ candle, isActive, 
   const bodyTop = bodyTopIndex * ROW_HEIGHT;
   const bodyHeight = (bodyBottomIndex - bodyTopIndex + 1) * ROW_HEIGHT;
 
+  // Helper for heatmap style opacity
+  const getDeltaStyle = (val: number) => {
+      if (val === 0) return {};
+      // Simple scaling for visualization
+      const opacity = Math.min(0.8, Math.max(0.2, Math.abs(val) / 500));
+      return { backgroundColor: val > 0 ? `rgba(255, 77, 77, ${opacity})` : `rgba(77, 148, 255, ${opacity})` };
+  };
+
+  // Calculate explicit height for the body area
+  const chartBodyHeight = priceRows.length * ROW_HEIGHT;
+
   return (
-    // Increased min-width to 120px
-    <div className={`flex flex-col min-w-[120px] border-r border-border-color shrink-0 ${isActive ? 'bg-gray-900/50' : 'bg-panel-bg'}`}>
+    // Increased min-width to 120px, added margin-right for spacing
+    <div className={`flex flex-col min-w-[120px] border-r border-border-color shrink-0 mr-1 h-fit ${isActive ? 'bg-gray-900/50' : 'bg-panel-bg'}`}>
       
       {/* Header Info - Compact */}
-      <div className="sticky top-0 z-20 bg-inherit border-b border-gray-800 text-[9px] text-center py-0.5 text-gray-500 font-mono shadow-sm leading-tight">
+      <div className="h-[35px] border-b border-gray-800 text-[9px] text-center flex flex-col justify-center text-gray-500 font-mono leading-tight shrink-0">
         <div>{candle.startTime}</div>
         <div className={`font-bold ${candle.close > candle.open ? 'text-kr-red' : candle.close < candle.open ? 'text-kr-blue' : 'text-gray-400'}`}>
-            V: {candle.totalVolume.toLocaleString()}
-        </div>
-        <div className="text-[8px] flex justify-center gap-1 opacity-80">
-            <span>D: {candle.delta > 0 ? '+' : ''}{candle.delta}</span>
+            {candle.close.toLocaleString()}
         </div>
       </div>
 
-      {/* Main Content Area */}
-      <div className="flex flex-row relative">
+      {/* Main Content Area - STRICT HEIGHT to match sticky column */}
+      <div 
+        className="flex flex-row relative shrink-0"
+        style={{ height: chartBodyHeight }}
+      >
           
           {/* OHLC Strip Column (8px) */}
-          <div className="w-[8px] border-r border-gray-800/30 relative shrink-0 bg-gray-900/20">
+          <div className="w-[8px] border-r border-gray-800/30 relative shrink-0 bg-gray-900/20 h-full">
              {hasValidIndices && (
                  <>
                     {/* Wick */}
@@ -89,7 +100,7 @@ const FootprintBarComponent: React.FC<FootprintBarProps> = ({ candle, isActive, 
           </div>
 
           {/* Footprint Rows Container */}
-          <div className="flex flex-col pb-4 flex-1">
+          <div className="flex flex-col flex-1">
             {priceRows.map((price) => {
                 const rowData = priceDataMap.get(price);
                 
@@ -111,12 +122,27 @@ const FootprintBarComponent: React.FC<FootprintBarProps> = ({ candle, isActive, 
             })}
           </div>
       </div>
+      
+      {/* Bottom Stats Table (Heatmap) */}
+      <div className="border-t border-gray-700 mt-auto shrink-0">
+          <StatRow label="Delta" value={candle.delta} style={getDeltaStyle(candle.delta)} isDelta />
+          <StatRow label="Max" value={candle.maxDelta} style={getDeltaStyle(candle.maxDelta)} isDelta />
+          <StatRow label="Min" value={candle.minDelta} style={getDeltaStyle(candle.minDelta)} isDelta />
+          <StatRow label="Vol" value={candle.totalVolume} style={{}} />
+      </div>
     </div>
   );
 };
 
+const StatRow: React.FC<{ label: string, value: number, style: React.CSSProperties, isDelta?: boolean }> = ({ label, value, style, isDelta }) => (
+    <div className="flex items-center justify-center text-[10px] font-mono border-b border-gray-800 last:border-b-0" style={{ height: ROW_HEIGHT, ...style }}>
+        <span className={`font-bold ${isDelta ? (value > 0 ? 'text-kr-red' : value < 0 ? 'text-kr-blue' : 'text-gray-400') : 'text-white'}`}>
+            {value.toLocaleString()}
+        </span>
+    </div>
+);
+
 // Custom Grid System: 3fr (Bid) | 4fr (Price) | 3fr (Ask)
-// Effectively 30% | 40% | 30%
 const EmptyRow: React.FC<{ price: number }> = ({ price }) => (
     <div 
         className="grid grid-cols-[3fr_4fr_3fr] gap-px text-[9px] font-mono border-b border-gray-800/10 opacity-20"
