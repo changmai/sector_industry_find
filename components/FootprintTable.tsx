@@ -132,7 +132,7 @@ const FootprintTable: React.FC<FootprintTableProps> = ({ bars, activeBar, global
 };
 
 const StatLabelRow: React.FC<{ label: string }> = ({ label }) => (
-    <div className="flex items-center justify-end pr-2 text-[9px] text-gray-400 font-mono border-b border-gray-800 last:border-b-0" style={{ height: ROW_HEIGHT }}>
+    <div className="flex items-center justify-end pr-2 text-[9px] text-white font-bold font-mono border-b border-gray-800 last:border-b-0" style={{ height: ROW_HEIGHT }}>
         {label}
     </div>
 );

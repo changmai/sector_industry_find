@@ -125,18 +125,18 @@ const FootprintBarComponent: React.FC<FootprintBarProps> = ({ candle, isActive, 
       
       {/* Bottom Stats Table (Heatmap) - Sticky Bottom */}
       <div className={`sticky bottom-0 border-t border-gray-700 mt-auto shrink-0 z-20 shadow-[0_-1px_2px_rgba(0,0,0,0.3)] ${isActive ? 'bg-gray-900' : 'bg-panel-bg'}`}>
-          <StatRow label="Delta" value={candle.delta} style={getDeltaStyle(candle.delta)} isDelta />
-          <StatRow label="Max" value={candle.maxDelta} style={getDeltaStyle(candle.maxDelta)} isDelta />
-          <StatRow label="Min" value={candle.minDelta} style={getDeltaStyle(candle.minDelta)} isDelta />
+          <StatRow label="Delta" value={candle.delta} style={getDeltaStyle(candle.delta)} />
+          <StatRow label="Max" value={candle.maxDelta} style={getDeltaStyle(candle.maxDelta)} />
+          <StatRow label="Min" value={candle.minDelta} style={getDeltaStyle(candle.minDelta)} />
           <StatRow label="Vol" value={candle.totalVolume} style={{}} />
       </div>
     </div>
   );
 };
 
-const StatRow: React.FC<{ label: string, value: number, style: React.CSSProperties, isDelta?: boolean }> = ({ label, value, style, isDelta }) => (
+const StatRow: React.FC<{ label: string, value: number, style: React.CSSProperties }> = ({ label, value, style }) => (
     <div className="flex items-center justify-center text-[10px] font-mono border-b border-gray-800 last:border-b-0" style={{ height: ROW_HEIGHT, ...style }}>
-        <span className={`font-bold ${isDelta ? (value > 0 ? 'text-kr-red' : value < 0 ? 'text-kr-blue' : 'text-gray-400') : 'text-white'}`}>
+        <span className="font-bold text-white drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)]">
             {value.toLocaleString()}
         </span>
     </div>
