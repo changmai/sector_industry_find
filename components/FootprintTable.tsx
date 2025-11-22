@@ -49,29 +49,29 @@ const FootprintTable: React.FC<FootprintTableProps> = ({ bars, activeBar, global
   
   return (
     <div className="flex flex-col h-full bg-panel-bg rounded-lg border border-border-color shadow-xl relative overflow-hidden">
-      
-      {/* 
-        Dual-Axis Scroll Container 
+
+      {/*
+        Dual-Axis Scroll Container
         - Horizontal for Bars
         - Vertical for Price Depth
       */}
-      <div 
+      <div
         ref={containerRef}
         onScroll={handleScroll}
         className="flex-1 overflow-auto custom-scrollbar relative"
       >
          <div className="flex h-full items-stretch min-h-min">
-            
+
             {/* Sticky Stats Label Column */}
-            <div className="sticky left-0 z-30 bg-panel-bg border-r border-border-color flex flex-col shrink-0 w-[70px] shadow-md h-fit min-h-full">
+            <div className="sticky left-0 z-30 bg-panel-bg border-r border-border-color flex flex-col shrink-0 w-[70px] shadow-md">
                 {/* Header Placeholder */}
-                <div 
+                <div
                     className="border-b border-gray-800 flex items-center justify-center text-[9px] text-gray-500 font-mono bg-panel-bg"
                     style={{ height: headerHeight }}
                 >
                     Stats
                 </div>
-                
+
                 {/* Body Spacer - Forces labels to push down exactly by the chart height */}
                 <div style={{ height: chartBodyHeight, minHeight: chartBodyHeight }}></div>
 
@@ -111,8 +111,8 @@ const FootprintTable: React.FC<FootprintTableProps> = ({ bars, activeBar, global
             
             {/* Spacer for comfortable viewing on right */}
             <div className="min-w-[50px] shrink-0"></div>
-         </div>
-      </div>
+          </div>
+        </div>
 
       {/* Legend / Status Bar */}
       <div className="h-6 bg-gray-900 border-t border-border-color flex items-center justify-between px-2 text-[10px] text-gray-500 shrink-0 z-20">

@@ -65,7 +65,7 @@ const FootprintBarComponent: React.FC<FootprintBarProps> = ({ candle, isActive, 
 
   return (
     // Increased min-width to 120px, added margin-right for spacing
-    <div className={`flex flex-col min-w-[120px] border-r border-border-color shrink-0 mr-1 h-fit min-h-full ${isActive ? 'bg-gray-900/50' : 'bg-panel-bg'}`}>
+    <div className={`flex flex-col min-w-[120px] border-r border-border-color shrink-0 mr-1 ${isActive ? 'bg-gray-900/50' : 'bg-panel-bg'}`}>
       
       {/* Header Info - Compact */}
       <div className="h-[35px] border-b border-gray-800 text-[9px] text-center flex flex-col justify-center text-gray-500 font-mono leading-tight shrink-0 bg-inherit z-10">

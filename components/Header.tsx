@@ -9,7 +9,7 @@ interface HeaderProps {
 
 const Header: React.FC<HeaderProps> = ({ stats }) => {
   return (
-    <div className="h-14 bg-panel-bg border-b border-border-color flex items-center justify-between px-4 shrink-0">
+    <div className="sticky top-0 z-50 h-14 bg-panel-bg border-b border-border-color flex items-center justify-between px-4 shrink-0">
       <div className="flex items-center space-x-4">
         <div className="flex items-center space-x-2">
           <div className="bg-kr-red/10 p-1.5 rounded">

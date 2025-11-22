@@ -14,24 +14,28 @@ type RotationMode = 'VOLUME' | 'TIME' | 'RANGE';
 const App: React.FC = () => {
   const [ticks, setTicks] = useState<Tick[]>([]);
   const [currentPrice, setCurrentPrice] = useState(CONFIG.INITIAL_PRICE);
-  
+
   // --- Rotation Settings ---
   const [rotationMode, setRotationMode] = useState<RotationMode>('VOLUME');
-  
+
   // Thresholds for each mode
   const [thresholds, setThresholds] = useState({
     VOLUME: 2000,
     TIME: 30, // seconds
     RANGE: 10 // ticks (e.g., 10 * 100 = 1000 price range)
   });
-  
+
   // Temp input state for UI
   const [tempInput, setTempInput] = useState<string>("2000");
 
   // --- Sequential Footprint State ---
   const [historyBars, setHistoryBars] = useState<FootprintCandle[]>([]);
   const activeBarMap = useRef<Map<number, PriceLevelData>>(new Map());
-  
+  const barIdCounter = useRef<number>(1);
+
+  // Store ALL ticks for recalculation when rotation mode changes
+  const allTicksHistory = useRef<Tick[]>([]);
+
   // Metadata for the active bar
   const [activeBarStats, setActiveBarStats] = useState<{
     id: number;
@@ -45,7 +49,7 @@ const App: React.FC = () => {
     maxDelta: number;
     minDelta: number;
   }>({
-    id: Date.now(),
+    id: barIdCounter.current++,
     startTime: new Date().toTimeString().split(' ')[0],
     timestamp: Date.now(),
     open: CONFIG.INITIAL_PRICE,
@@ -61,6 +65,137 @@ const App: React.FC = () => {
   useEffect(() => {
     setTempInput(thresholds[rotationMode].toString());
   }, [rotationMode]);
+
+  // Recalculate all bars when rotation mode or thresholds change
+  const recalculateBars = (mode: RotationMode, threshold: number) => {
+    const allTicks = allTicksHistory.current;
+    if (allTicks.length === 0) return;
+
+    const newHistoryBars: FootprintCandle[] = [];
+    let currentBarMap = new Map<number, PriceLevelData>();
+    let barId = 1;
+    let barStartTime = allTicks[0].time;
+    let barTimestamp = allTicks[0].timestamp;
+    let barOpen = allTicks[0].price;
+    let barHigh = allTicks[0].price;
+    let barLow = allTicks[0].price;
+    let barTotalVolume = 0;
+    let barCurrentDelta = 0;
+    let barMaxDelta = 0;
+    let barMinDelta = 0;
+
+    for (let i = 0; i < allTicks.length; i++) {
+      const tick = allTicks[i];
+
+      // Add tick to current bar
+      const level: PriceLevelData = currentBarMap.get(tick.price) || {
+        price: tick.price,
+        buyVolume: 0,
+        sellVolume: 0,
+        totalVolume: 0,
+        delta: 0,
+        imbalanceBuy: false,
+        imbalanceSell: false,
+        stackedImbalanceBuy: false,
+        stackedImbalanceSell: false,
+        isPOC: false,
+        isUnfinished: false
+      };
+
+      if (tick.side === Side.Buy) level.buyVolume += tick.volume;
+      else level.sellVolume += tick.volume;
+
+      level.totalVolume += tick.volume;
+      level.delta = level.buyVolume - level.sellVolume;
+      currentBarMap.set(tick.price, level);
+
+      // Update bar stats
+      const tickDelta = tick.side === Side.Buy ? tick.volume : -tick.volume;
+      barTotalVolume += tick.volume;
+      barHigh = Math.max(barHigh, tick.price);
+      barLow = Math.min(barLow, tick.price);
+      barCurrentDelta += tickDelta;
+      barMaxDelta = Math.max(barMaxDelta, barCurrentDelta);
+      barMinDelta = Math.min(barMinDelta, barCurrentDelta);
+
+      // Check rotation
+      let shouldRotate = false;
+
+      if (mode === 'VOLUME') {
+        if (barTotalVolume >= threshold) shouldRotate = true;
+      } else if (mode === 'TIME') {
+        const elapsedSec = (tick.timestamp - barTimestamp) / 1000;
+        if (elapsedSec >= threshold) shouldRotate = true;
+      } else if (mode === 'RANGE') {
+        const rangeTicks = (barHigh - barLow) / CONFIG.PRICE_STEP;
+        if (rangeTicks >= threshold) shouldRotate = true;
+      }
+
+      // Finalize bar if rotation condition met
+      if (shouldRotate) {
+        const processedLevels = calculateFootprintIndicators(currentBarMap);
+        const finishedBar: FootprintCandle = {
+          id: barId++,
+          startTime: barStartTime,
+          endTime: tick.time,
+          open: barOpen,
+          close: tick.price,
+          high: barHigh,
+          low: barLow,
+          totalVolume: barTotalVolume,
+          delta: barCurrentDelta,
+          maxDelta: barMaxDelta,
+          minDelta: barMinDelta,
+          priceLevels: processedLevels
+        };
+
+        newHistoryBars.push(finishedBar);
+
+        // Reset for next bar
+        currentBarMap = new Map();
+
+        // Always reset stats for next bar (will be updated by next tick)
+        if (i < allTicks.length - 1) {
+          barStartTime = tick.time;
+          barTimestamp = tick.timestamp;
+          barOpen = tick.price;
+          barHigh = tick.price;
+          barLow = tick.price;
+          barTotalVolume = 0;
+          barCurrentDelta = 0;
+          barMaxDelta = 0;
+          barMinDelta = 0;
+        }
+      }
+    }
+
+    // Update state with recalculated bars
+    setHistoryBars(newHistoryBars.slice(-20));
+
+    // Reset active bar
+    activeBarMap.current = currentBarMap;
+    barIdCounter.current = barId;
+
+    setActiveBarStats({
+      id: barId,
+      startTime: barStartTime,
+      timestamp: barTimestamp,
+      open: barOpen,
+      high: barHigh,
+      low: barLow,
+      totalVolume: barTotalVolume,
+      currentDelta: barCurrentDelta,
+      maxDelta: barMaxDelta,
+      minDelta: barMinDelta
+    });
+  };
+
+  // Trigger recalculation when mode or threshold changes
+  useEffect(() => {
+    if (allTicksHistory.current.length > 0) {
+      recalculateBars(rotationMode, thresholds[rotationMode]);
+    }
+  }, [rotationMode, thresholds]);
 
   // --- Derived Stats for Header ---
   const headerStats: FootprintStats = useMemo(() => {
@@ -117,65 +252,67 @@ const App: React.FC = () => {
 
       setCurrentPrice(newTick.price);
       
+      // Store tick in full history for recalculation
+      allTicksHistory.current.push(newTick);
+
       setTicks(prevTicks => {
         const updated = [newTick, ...prevTicks];
-        return updated.slice(0, 200); 
+        return updated.slice(0, 200);
       });
 
       // --- Footprint Bar Logic ---
-      
-      // 1. Update Active Bar Map
-      const currentMap = activeBarMap.current;
-      const level: PriceLevelData = currentMap.get(newTick.price) || {
-          price: newTick.price,
-          buyVolume: 0,
-          sellVolume: 0,
-          totalVolume: 0,
-          delta: 0,
-          imbalanceBuy: false,
-          imbalanceSell: false,
-          stackedImbalanceBuy: false,
-          stackedImbalanceSell: false,
-          isPOC: false,
-          isUnfinished: false
-      };
 
-      if (newTick.side === Side.Buy) level.buyVolume += newTick.volume;
-      else level.sellVolume += newTick.volume;
-      
-      level.totalVolume += newTick.volume;
-      level.delta = level.buyVolume - level.sellVolume;
-      currentMap.set(newTick.price, level);
-
-      // 2. Update Stats & Check Rotation
-      const tickDelta = newTick.side === Side.Buy ? newTick.volume : -newTick.volume;
-
+      // Check rotation BEFORE adding the tick
       setActiveBarStats(prev => {
-        const newTotalVol = prev.totalVolume + newTick.volume;
-        const newHigh = Math.max(prev.high, newTick.price);
-        const newLow = Math.min(prev.low, newTick.price);
-        
-        const newCurrentDelta = prev.currentDelta + tickDelta;
-        const newMaxDelta = Math.max(prev.maxDelta, newCurrentDelta);
-        const newMinDelta = Math.min(prev.minDelta, newCurrentDelta);
+        const potentialTotalVol = prev.totalVolume + newTick.volume;
+        const potentialHigh = Math.max(prev.high, newTick.price);
+        const potentialLow = Math.min(prev.low, newTick.price);
+
+        const tickDelta = newTick.side === Side.Buy ? newTick.volume : -newTick.volume;
+        const potentialCurrentDelta = prev.currentDelta + tickDelta;
+        const potentialMaxDelta = Math.max(prev.maxDelta, potentialCurrentDelta);
+        const potentialMinDelta = Math.min(prev.minDelta, potentialCurrentDelta);
 
         // --- ROTATION LOGIC ---
         let shouldRotate = false;
 
         if (rotationMode === 'VOLUME') {
-            if (newTotalVol >= thresholds.VOLUME) shouldRotate = true;
-        } 
+            if (potentialTotalVol >= thresholds.VOLUME) shouldRotate = true;
+        }
         else if (rotationMode === 'TIME') {
             const elapsedSec = (now - prev.timestamp) / 1000;
             if (elapsedSec >= thresholds.TIME) shouldRotate = true;
         }
         else if (rotationMode === 'RANGE') {
-            const rangeTicks = (newHigh - newLow) / CONFIG.PRICE_STEP;
+            const rangeTicks = (potentialHigh - potentialLow) / CONFIG.PRICE_STEP;
             if (rangeTicks >= thresholds.RANGE) shouldRotate = true;
         }
 
         if (shouldRotate) {
-             // Finalize Bar
+             // Add the current tick to the active bar map BEFORE finalizing
+             const currentMap = activeBarMap.current;
+             const level: PriceLevelData = currentMap.get(newTick.price) || {
+                 price: newTick.price,
+                 buyVolume: 0,
+                 sellVolume: 0,
+                 totalVolume: 0,
+                 delta: 0,
+                 imbalanceBuy: false,
+                 imbalanceSell: false,
+                 stackedImbalanceBuy: false,
+                 stackedImbalanceSell: false,
+                 isPOC: false,
+                 isUnfinished: false
+             };
+
+             if (newTick.side === Side.Buy) level.buyVolume += newTick.volume;
+             else level.sellVolume += newTick.volume;
+
+             level.totalVolume += newTick.volume;
+             level.delta = level.buyVolume - level.sellVolume;
+             currentMap.set(newTick.price, level);
+
+             // Finalize Bar with the tick included
              const processedLevels = calculateFootprintIndicators(currentMap);
              const finishedBar: FootprintCandle = {
                  id: prev.id,
@@ -183,28 +320,30 @@ const App: React.FC = () => {
                  endTime: nowStr,
                  open: prev.open,
                  close: newTick.price,
-                 high: newHigh,
-                 low: newLow,
-                 totalVolume: newTotalVol,
-                 delta: newCurrentDelta,
-                 maxDelta: newMaxDelta,
-                 minDelta: newMinDelta,
+                 high: potentialHigh,
+                 low: potentialLow,
+                 totalVolume: potentialTotalVol,
+                 delta: potentialCurrentDelta,
+                 maxDelta: potentialMaxDelta,
+                 minDelta: potentialMinDelta,
                  priceLevels: processedLevels
              };
 
              setHistoryBars(prevHistory => {
                  const newHistory = [...prevHistory, finishedBar];
-                 return newHistory.slice(-20); 
+                 return newHistory.slice(-20);
              });
 
-             activeBarMap.current = new Map(); // Clear
-             
-             // Reset
+             // Clear the map for new bar
+             activeBarMap.current = new Map();
+
+             // Reset with unique ID - new bar will start with next tick
+             // CRITICAL: Use the LAST price (close of finished bar) as starting point
              return {
-                 id: now,
+                 id: barIdCounter.current++,
                  startTime: nowStr,
                  timestamp: now,
-                 open: newTick.price,
+                 open: newTick.price, // Start new bar from the rotation tick's price
                  high: newTick.price,
                  low: newTick.price,
                  totalVolume: 0,
@@ -214,14 +353,43 @@ const App: React.FC = () => {
              };
         }
 
+        // No rotation - add tick to active bar
+        const currentMap = activeBarMap.current;
+        const level: PriceLevelData = currentMap.get(newTick.price) || {
+            price: newTick.price,
+            buyVolume: 0,
+            sellVolume: 0,
+            totalVolume: 0,
+            delta: 0,
+            imbalanceBuy: false,
+            imbalanceSell: false,
+            stackedImbalanceBuy: false,
+            stackedImbalanceSell: false,
+            isPOC: false,
+            isUnfinished: false
+        };
+
+        if (newTick.side === Side.Buy) level.buyVolume += newTick.volume;
+        else level.sellVolume += newTick.volume;
+
+        level.totalVolume += newTick.volume;
+        level.delta = level.buyVolume - level.sellVolume;
+        currentMap.set(newTick.price, level);
+
+        // Check if this is the first tick of a new bar
+        const isFirstTick = prev.totalVolume === 0;
+
         return {
             ...prev,
-            high: newHigh,
-            low: newLow,
-            totalVolume: newTotalVol,
-            currentDelta: newCurrentDelta,
-            maxDelta: newMaxDelta,
-            minDelta: newMinDelta
+            open: isFirstTick ? newTick.price : prev.open,
+            // CRITICAL FIX: For first tick, initialize high/low to current price
+            // This ensures Range calculation starts fresh from 0
+            high: isFirstTick ? newTick.price : potentialHigh,
+            low: isFirstTick ? newTick.price : potentialLow,
+            totalVolume: potentialTotalVol,
+            currentDelta: potentialCurrentDelta,
+            maxDelta: potentialMaxDelta,
+            minDelta: potentialMinDelta
         };
       });
 
@@ -273,9 +441,9 @@ const App: React.FC = () => {
   const meta = getModeMeta();
 
   return (
-    <div className="h-screen w-screen bg-dark-bg text-white flex flex-col overflow-hidden font-sans selection:bg-gray-700">
+    <div className="h-screen w-screen bg-dark-bg text-white flex flex-col font-sans selection:bg-gray-700">
       <Header stats={headerStats} />
-      
+
       <main className="flex-1 flex overflow-hidden p-1 gap-1">
         {/* Left Panel */}
         <div className="flex-[1] flex flex-col min-w-0">
