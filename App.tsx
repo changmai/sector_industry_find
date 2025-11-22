@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import Header from './components/Header';
 import FootprintTable from './components/FootprintTable';
@@ -53,6 +54,37 @@ const App: React.FC = () => {
          close: currentPrice
      };
   }, [ticks, currentPrice]);
+
+  // --- Calculate Global Y-Axis Range (Synchronization) ---
+  const { globalHigh, globalLow } = useMemo(() => {
+    let highs: number[] = [];
+    let lows: number[] = [];
+
+    if (historyBars.length > 0) {
+        highs.push(...historyBars.map(b => b.high));
+        lows.push(...historyBars.map(b => b.low));
+    }
+    
+    // Include active bar
+    if (activeBarStats.totalVolume > 0) {
+        highs.push(activeBarStats.high);
+        lows.push(activeBarStats.low);
+    }
+
+    if (highs.length === 0) {
+        return { globalHigh: CONFIG.INITIAL_PRICE + CONFIG.PRICE_STEP * 5, globalLow: CONFIG.INITIAL_PRICE - CONFIG.PRICE_STEP * 5 };
+    }
+
+    const max = Math.max(...highs);
+    const min = Math.min(...lows);
+
+    // Add Padding (2 steps)
+    return {
+        globalHigh: max + (CONFIG.PRICE_STEP * 2),
+        globalLow: min - (CONFIG.PRICE_STEP * 2)
+    };
+  }, [historyBars, activeBarStats.high, activeBarStats.low]);
+
 
   // --- Main Tick Loop ---
   useEffect(() => {
@@ -221,7 +253,12 @@ const App: React.FC = () => {
                 </div>
             </div>
             
-            <FootprintTable bars={historyBars} activeBar={activeBarCandle} />
+            <FootprintTable 
+                bars={historyBars} 
+                activeBar={activeBarCandle}
+                globalHigh={globalHigh}
+                globalLow={globalLow}
+            />
         </div>
 
         {/* Right Panel: Tick List */}
