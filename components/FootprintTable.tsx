@@ -63,10 +63,10 @@ const FootprintTable: React.FC<FootprintTableProps> = ({ bars, activeBar, global
          <div className="flex h-full items-stretch min-h-min">
             
             {/* Sticky Stats Label Column */}
-            <div className="sticky left-0 z-30 bg-panel-bg border-r border-border-color flex flex-col shrink-0 w-[70px] shadow-md h-fit">
+            <div className="sticky left-0 z-30 bg-panel-bg border-r border-border-color flex flex-col shrink-0 w-[70px] shadow-md h-fit min-h-full">
                 {/* Header Placeholder */}
                 <div 
-                    className="border-b border-gray-800 flex items-center justify-center text-[9px] text-gray-500 font-mono"
+                    className="border-b border-gray-800 flex items-center justify-center text-[9px] text-gray-500 font-mono bg-panel-bg"
                     style={{ height: headerHeight }}
                 >
                     Stats
@@ -75,8 +75,8 @@ const FootprintTable: React.FC<FootprintTableProps> = ({ bars, activeBar, global
                 {/* Body Spacer - Forces labels to push down exactly by the chart height */}
                 <div style={{ height: chartBodyHeight, minHeight: chartBodyHeight }}></div>
 
-                {/* Stats Labels */}
-                <div className="border-t border-gray-700 bg-panel-bg">
+                {/* Stats Labels - Sticky Bottom */}
+                <div className="mt-auto sticky bottom-0 border-t border-gray-700 bg-panel-bg z-40 shadow-[0_-1px_2px_rgba(0,0,0,0.3)]">
                     <StatLabelRow label="Delta" />
                     <StatLabelRow label="Max Delta" />
                     <StatLabelRow label="Min Delta" />
@@ -132,7 +132,7 @@ const FootprintTable: React.FC<FootprintTableProps> = ({ bars, activeBar, global
 };
 
 const StatLabelRow: React.FC<{ label: string }> = ({ label }) => (
-    <div className="flex items-center justify-end pr-2 text-[9px] text-gray-400 font-mono border-b border-gray-800 last:border-b-0 bg-panel-bg" style={{ height: ROW_HEIGHT }}>
+    <div className="flex items-center justify-end pr-2 text-[9px] text-gray-400 font-mono border-b border-gray-800 last:border-b-0" style={{ height: ROW_HEIGHT }}>
         {label}
     </div>
 );

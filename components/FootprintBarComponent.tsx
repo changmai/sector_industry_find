@@ -65,10 +65,10 @@ const FootprintBarComponent: React.FC<FootprintBarProps> = ({ candle, isActive, 
 
   return (
     // Increased min-width to 120px, added margin-right for spacing
-    <div className={`flex flex-col min-w-[120px] border-r border-border-color shrink-0 mr-1 h-fit ${isActive ? 'bg-gray-900/50' : 'bg-panel-bg'}`}>
+    <div className={`flex flex-col min-w-[120px] border-r border-border-color shrink-0 mr-1 h-fit min-h-full ${isActive ? 'bg-gray-900/50' : 'bg-panel-bg'}`}>
       
       {/* Header Info - Compact */}
-      <div className="h-[35px] border-b border-gray-800 text-[9px] text-center flex flex-col justify-center text-gray-500 font-mono leading-tight shrink-0">
+      <div className="h-[35px] border-b border-gray-800 text-[9px] text-center flex flex-col justify-center text-gray-500 font-mono leading-tight shrink-0 bg-inherit z-10">
         <div>{candle.startTime}</div>
         <div className={`font-bold ${candle.close > candle.open ? 'text-kr-red' : candle.close < candle.open ? 'text-kr-blue' : 'text-gray-400'}`}>
             {candle.close.toLocaleString()}
@@ -123,8 +123,8 @@ const FootprintBarComponent: React.FC<FootprintBarProps> = ({ candle, isActive, 
           </div>
       </div>
       
-      {/* Bottom Stats Table (Heatmap) */}
-      <div className="border-t border-gray-700 mt-auto shrink-0">
+      {/* Bottom Stats Table (Heatmap) - Sticky Bottom */}
+      <div className={`sticky bottom-0 border-t border-gray-700 mt-auto shrink-0 z-20 shadow-[0_-1px_2px_rgba(0,0,0,0.3)] ${isActive ? 'bg-gray-900' : 'bg-panel-bg'}`}>
           <StatRow label="Delta" value={candle.delta} style={getDeltaStyle(candle.delta)} isDelta />
           <StatRow label="Max" value={candle.maxDelta} style={getDeltaStyle(candle.maxDelta)} isDelta />
           <StatRow label="Min" value={candle.minDelta} style={getDeltaStyle(candle.minDelta)} isDelta />
