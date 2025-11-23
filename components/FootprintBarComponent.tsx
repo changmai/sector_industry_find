@@ -31,26 +31,38 @@ const FootprintBarComponent: React.FC<FootprintBarProps> = ({ candle, isActive, 
   }, [candle]);
 
   // --- OHLC Strip Calculations ---
+  const isDoji = candle.open === candle.close;
   const isBullish = candle.close >= candle.open;
-  const stripColor = isBullish ? 'bg-kr-red' : 'bg-kr-blue';
+  const stripColor = isDoji ? 'bg-gray-300' : (isBullish ? 'bg-kr-red' : 'bg-kr-blue');
   const wickColor = isBullish ? 'bg-kr-red/50' : 'bg-kr-blue/50';
 
   const highIndex = priceRows.indexOf(candle.high);
   const lowIndex = priceRows.indexOf(candle.low);
   const openIndex = priceRows.indexOf(candle.open);
   const closeIndex = priceRows.indexOf(candle.close);
-  
+
   const hasValidIndices = highIndex !== -1 && lowIndex !== -1 && openIndex !== -1 && closeIndex !== -1;
-  
+
   const bodyTopIndex = Math.min(openIndex, closeIndex);
   const bodyBottomIndex = Math.max(openIndex, closeIndex);
-  
+
   // Wick covers full height of High row to Bottom of Low row
   const wickTop = highIndex * ROW_HEIGHT;
   const wickHeight = (lowIndex - highIndex + 1) * ROW_HEIGHT;
-  
-  const bodyTop = bodyTopIndex * ROW_HEIGHT;
-  const bodyHeight = (bodyBottomIndex - bodyTopIndex + 1) * ROW_HEIGHT;
+
+  // Doji candle: render as horizontal line at price level center
+  let bodyTop: number;
+  let bodyHeight: number;
+
+  if (isDoji) {
+    const DOJI_LINE_HEIGHT = 2;
+    bodyTop = (openIndex * ROW_HEIGHT) + (ROW_HEIGHT / 2) - (DOJI_LINE_HEIGHT / 2);
+    bodyHeight = DOJI_LINE_HEIGHT;
+  } else {
+    // Normal candle: full body from open to close
+    bodyTop = bodyTopIndex * ROW_HEIGHT;
+    bodyHeight = (bodyBottomIndex - bodyTopIndex + 1) * ROW_HEIGHT;
+  }
 
   // Helper for heatmap style opacity
   const getDeltaStyle = (val: number) => {

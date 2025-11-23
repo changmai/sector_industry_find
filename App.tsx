@@ -4,6 +4,7 @@ import Header from './components/Header';
 import FootprintTable from './components/FootprintTable';
 import TickList from './components/TickList';
 import { generateTick } from './services/mockDataService';
+import { loadRawData } from './services/rawDataService';
 import { Tick, PriceLevelData, FootprintStats, Side, FootprintCandle } from './types';
 import { CONFIG } from './constants';
 import { calculateFootprintIndicators } from './utils';
@@ -14,6 +15,11 @@ type RotationMode = 'VOLUME' | 'TIME' | 'RANGE';
 const App: React.FC = () => {
   const [ticks, setTicks] = useState<Tick[]>([]);
   const [currentPrice, setCurrentPrice] = useState(CONFIG.INITIAL_PRICE);
+
+  // --- Raw Data Mode ---
+  const [useRawData, setUseRawData] = useState(false);
+  const rawTicksRef = useRef<Tick[]>([]);
+  const rawTickIndexRef = useRef(0);
 
   // --- Rotation Settings ---
   const [rotationMode, setRotationMode] = useState<RotationMode>('VOLUME');
@@ -65,6 +71,20 @@ const App: React.FC = () => {
   useEffect(() => {
     setTempInput(thresholds[rotationMode].toString());
   }, [rotationMode]);
+
+  // Load Raw Data when mode is enabled
+  useEffect(() => {
+    if (useRawData && rawTicksRef.current.length === 0) {
+      console.log('📥 Loading raw data...');
+      loadRawData().then(ticks => {
+        rawTicksRef.current = ticks;
+        rawTickIndexRef.current = 0;
+        console.log(`✅ Raw data loaded: ${ticks.length} ticks ready`);
+      }).catch(err => {
+        console.error('❌ Failed to load raw data:', err);
+      });
+    }
+  }, [useRawData]);
 
   // Recalculate all bars when rotation mode or thresholds change
   const recalculateBars = (mode: RotationMode, threshold: number) => {
@@ -246,12 +266,27 @@ const App: React.FC = () => {
   // --- Main Tick Loop ---
   useEffect(() => {
     const interval = setInterval(() => {
-      const newTick = generateTick();
+      let newTick: Tick;
+
+      // Select data source based on mode
+      if (useRawData) {
+        // Raw Data Mode: Sequential playback
+        if (rawTickIndexRef.current >= rawTicksRef.current.length) {
+          console.log('⏹️ Raw data playback finished');
+          clearInterval(interval);
+          return;
+        }
+        newTick = rawTicksRef.current[rawTickIndexRef.current++];
+      } else {
+        // Mock Data Mode: Generate random tick
+        newTick = generateTick();
+      }
+
       const now = Date.now();
       const nowStr = new Date(now).toTimeString().split(' ')[0];
 
       setCurrentPrice(newTick.price);
-      
+
       // Store tick in full history for recalculation
       allTicksHistory.current.push(newTick);
 
@@ -393,10 +428,10 @@ const App: React.FC = () => {
         };
       });
 
-    }, CONFIG.TICK_RATE_MS);
+    }, useRawData ? 100 : CONFIG.TICK_RATE_MS); // 100ms for Raw Data, 200ms for Mock Data
 
     return () => clearInterval(interval);
-  }, [rotationMode, thresholds]); // Re-bind when mode/thresholds change
+  }, [useRawData, rotationMode, thresholds]); // Re-bind when mode/thresholds change
 
   const activeBarCandle: FootprintCandle | null = useMemo(() => {
       if (activeBarStats.totalVolume === 0 && activeBarMap.current.size === 0) return null;
@@ -490,7 +525,23 @@ const App: React.FC = () => {
                     </div>
                 </div>
 
-                <div className="flex space-x-2">
+                <div className="flex space-x-2 items-center">
+                    <button
+                        onClick={() => {
+                            setUseRawData(!useRawData);
+                            // Reset raw data index when toggling
+                            if (!useRawData) {
+                                rawTickIndexRef.current = 0;
+                            }
+                        }}
+                        className={`text-[10px] px-3 py-1 rounded font-semibold transition-colors border ${
+                            useRawData
+                                ? 'bg-kr-red text-white border-kr-red shadow-sm'
+                                : 'bg-gray-700 text-gray-300 hover:bg-gray-600 border-gray-600'
+                        }`}
+                    >
+                        {useRawData ? '📊 Raw Data' : '🎲 Mock Data'}
+                    </button>
                     <span className="text-[10px] text-gray-500 bg-gray-800 px-2 py-0.5 rounded border border-gray-700 font-mono">
                         History: {historyBars.length}
                     </span>
