@@ -1,25 +1,29 @@
 
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import Header from './components/Header';
 import FootprintTable from './components/FootprintTable';
 import TickList from './components/TickList';
 import { generateTick } from './services/mockDataService';
 import { loadRawData } from './services/rawDataService';
+import { connectWebSocket } from './services/websocketDataService';
 import { Tick, PriceLevelData, FootprintStats, Side, FootprintCandle } from './types';
 import { CONFIG } from './constants';
 import { calculateFootprintIndicators } from './utils';
 import { Clock, BarChart2, MoveVertical } from 'lucide-react';
 
 type RotationMode = 'VOLUME' | 'TIME' | 'RANGE';
+type DataSource = 'mock' | 'raw' | 'websocket';
 
 const App: React.FC = () => {
   const [ticks, setTicks] = useState<Tick[]>([]);
   const [currentPrice, setCurrentPrice] = useState(CONFIG.INITIAL_PRICE);
 
-  // --- Raw Data Mode ---
-  const [useRawData, setUseRawData] = useState(false);
+  // --- Data Source Selection ---
+  const [dataSource, setDataSource] = useState<DataSource>('mock');
+  const [wsStatus, setWsStatus] = useState<string>('준비');
   const rawTicksRef = useRef<Tick[]>([]);
   const rawTickIndexRef = useRef(0);
+  const wsRef = useRef<WebSocket | null>(null);
 
   // --- Rotation Settings ---
   const [rotationMode, setRotationMode] = useState<RotationMode>('VOLUME');
@@ -74,7 +78,7 @@ const App: React.FC = () => {
 
   // Load Raw Data when mode is enabled
   useEffect(() => {
-    if (useRawData && rawTicksRef.current.length === 0) {
+    if (dataSource === 'raw' && rawTicksRef.current.length === 0) {
       console.log('📥 Loading raw data...');
       loadRawData().then(ticks => {
         rawTicksRef.current = ticks;
@@ -84,7 +88,7 @@ const App: React.FC = () => {
         console.error('❌ Failed to load raw data:', err);
       });
     }
-  }, [useRawData]);
+  }, [dataSource]);
 
   // Recalculate all bars when rotation mode or thresholds change
   const recalculateBars = (mode: RotationMode, threshold: number) => {
@@ -263,13 +267,192 @@ const App: React.FC = () => {
   }, [historyBars, activeBarStats.high, activeBarStats.low]);
 
 
-  // --- Main Tick Loop ---
+  // --- Tick Processing Function (used by both interval and WebSocket) ---
+  const processTick = useCallback((newTick: Tick) => {
+    const now = Date.now();
+    const nowStr = new Date(now).toTimeString().split(' ')[0];
+
+    setCurrentPrice(newTick.price);
+
+    // Store tick in full history for recalculation
+    allTicksHistory.current.push(newTick);
+
+    setTicks(prevTicks => {
+      const updated = [newTick, ...prevTicks];
+      return updated.slice(0, 200);
+    });
+
+    // --- Footprint Bar Logic ---
+
+    // Check rotation BEFORE adding the tick
+    setActiveBarStats(prev => {
+        const potentialTotalVol = prev.totalVolume + newTick.volume;
+        const potentialHigh = Math.max(prev.high, newTick.price);
+        const potentialLow = Math.min(prev.low, newTick.price);
+
+      const tickDelta = newTick.side === Side.Buy ? newTick.volume : -newTick.volume;
+      const potentialCurrentDelta = prev.currentDelta + tickDelta;
+      const potentialMaxDelta = Math.max(prev.maxDelta, potentialCurrentDelta);
+      const potentialMinDelta = Math.min(prev.minDelta, potentialCurrentDelta);
+
+      // --- ROTATION LOGIC ---
+      let shouldRotate = false;
+
+      if (rotationMode === 'VOLUME') {
+          if (potentialTotalVol >= thresholds.VOLUME) shouldRotate = true;
+      }
+      else if (rotationMode === 'TIME') {
+          const elapsedSec = (now - prev.timestamp) / 1000;
+          if (elapsedSec >= thresholds.TIME) shouldRotate = true;
+      }
+      else if (rotationMode === 'RANGE') {
+          const rangeTicks = (potentialHigh - potentialLow) / CONFIG.PRICE_STEP;
+          if (rangeTicks >= thresholds.RANGE) shouldRotate = true;
+      }
+
+      if (shouldRotate) {
+           // Add the current tick to the active bar map BEFORE finalizing
+           const currentMap = activeBarMap.current;
+           const level: PriceLevelData = currentMap.get(newTick.price) || {
+               price: newTick.price,
+               buyVolume: 0,
+               sellVolume: 0,
+               totalVolume: 0,
+               delta: 0,
+               imbalanceBuy: false,
+               imbalanceSell: false,
+               stackedImbalanceBuy: false,
+               stackedImbalanceSell: false,
+               isPOC: false,
+               isUnfinished: false
+           };
+
+           if (newTick.side === Side.Buy) level.buyVolume += newTick.volume;
+           else level.sellVolume += newTick.volume;
+
+           level.totalVolume += newTick.volume;
+           level.delta = level.buyVolume - level.sellVolume;
+           currentMap.set(newTick.price, level);
+
+           // Finalize Bar with the tick included
+           const processedLevels = calculateFootprintIndicators(currentMap);
+           const finishedBar: FootprintCandle = {
+               id: prev.id,
+               startTime: prev.startTime,
+               endTime: nowStr,
+               open: prev.open,
+               close: newTick.price,
+               high: potentialHigh,
+               low: potentialLow,
+               totalVolume: potentialTotalVol,
+               delta: potentialCurrentDelta,
+               maxDelta: potentialMaxDelta,
+               minDelta: potentialMinDelta,
+               priceLevels: processedLevels
+           };
+
+           setHistoryBars(prevHistory => {
+               const newHistory = [...prevHistory, finishedBar];
+               return newHistory;
+           });
+
+           // Clear the map for new bar
+           activeBarMap.current = new Map();
+
+           // Reset with unique ID - new bar will start with next tick
+           // CRITICAL: Use the LAST price (close of finished bar) as starting point
+           return {
+               id: barIdCounter.current++,
+               startTime: nowStr,
+               timestamp: now,
+               open: newTick.price, // Start new bar from the rotation tick's price
+               high: newTick.price,
+               low: newTick.price,
+               totalVolume: 0,
+               currentDelta: 0,
+               maxDelta: 0,
+               minDelta: 0
+           };
+      }
+
+      // No rotation - add tick to active bar
+      const currentMap = activeBarMap.current;
+      const level: PriceLevelData = currentMap.get(newTick.price) || {
+          price: newTick.price,
+          buyVolume: 0,
+          sellVolume: 0,
+          totalVolume: 0,
+          delta: 0,
+          imbalanceBuy: false,
+          imbalanceSell: false,
+          stackedImbalanceBuy: false,
+          stackedImbalanceSell: false,
+          isPOC: false,
+          isUnfinished: false
+      };
+
+      if (newTick.side === Side.Buy) level.buyVolume += newTick.volume;
+      else level.sellVolume += newTick.volume;
+
+      level.totalVolume += newTick.volume;
+      level.delta = level.buyVolume - level.sellVolume;
+      currentMap.set(newTick.price, level);
+
+      // Check if this is the first tick of a new bar
+      const isFirstTick = prev.totalVolume === 0;
+
+      return {
+          ...prev,
+          open: isFirstTick ? newTick.price : prev.open,
+          // CRITICAL FIX: For first tick, initialize high/low to current price
+          // This ensures Range calculation starts fresh from 0
+          high: isFirstTick ? newTick.price : potentialHigh,
+          low: isFirstTick ? newTick.price : potentialLow,
+          totalVolume: potentialTotalVol,
+          currentDelta: potentialCurrentDelta,
+          maxDelta: potentialMaxDelta,
+          minDelta: potentialMinDelta
+      };
+    });
+  }, [rotationMode, thresholds]); // Dependencies: only recreate when rotation settings change
+
+  // --- WebSocket Connection (separate from tick processing) ---
   useEffect(() => {
+    if (dataSource === 'websocket') {
+      const ws = connectWebSocket(
+        (tick) => {
+          processTick(tick);
+        },
+        (error) => {
+          console.error('WebSocket Error:', error);
+          setWsStatus('연결 오류');
+        },
+        (status) => {
+          setWsStatus(status);
+        }
+      );
+
+      wsRef.current = ws;
+
+      return () => {
+        ws.close();
+        wsRef.current = null;
+      };
+    }
+  }, [dataSource, processTick]); // Reconnect when data source changes or processTick updates
+
+  // --- Mock/Raw Data Tick Loop ---
+  useEffect(() => {
+    // Skip if using WebSocket
+    if (dataSource === 'websocket') {
+      return;
+    }
+
     const interval = setInterval(() => {
       let newTick: Tick;
 
-      // Select data source based on mode
-      if (useRawData) {
+      // Select data source
+      if (dataSource === 'raw') {
         // Raw Data Mode: Sequential playback
         if (rawTickIndexRef.current >= rawTicksRef.current.length) {
           console.log('⏹️ Raw data playback finished');
@@ -282,156 +465,11 @@ const App: React.FC = () => {
         newTick = generateTick();
       }
 
-      const now = Date.now();
-      const nowStr = new Date(now).toTimeString().split(' ')[0];
-
-      setCurrentPrice(newTick.price);
-
-      // Store tick in full history for recalculation
-      allTicksHistory.current.push(newTick);
-
-      setTicks(prevTicks => {
-        const updated = [newTick, ...prevTicks];
-        return updated.slice(0, 200);
-      });
-
-      // --- Footprint Bar Logic ---
-
-      // Check rotation BEFORE adding the tick
-      setActiveBarStats(prev => {
-        const potentialTotalVol = prev.totalVolume + newTick.volume;
-        const potentialHigh = Math.max(prev.high, newTick.price);
-        const potentialLow = Math.min(prev.low, newTick.price);
-
-        const tickDelta = newTick.side === Side.Buy ? newTick.volume : -newTick.volume;
-        const potentialCurrentDelta = prev.currentDelta + tickDelta;
-        const potentialMaxDelta = Math.max(prev.maxDelta, potentialCurrentDelta);
-        const potentialMinDelta = Math.min(prev.minDelta, potentialCurrentDelta);
-
-        // --- ROTATION LOGIC ---
-        let shouldRotate = false;
-
-        if (rotationMode === 'VOLUME') {
-            if (potentialTotalVol >= thresholds.VOLUME) shouldRotate = true;
-        }
-        else if (rotationMode === 'TIME') {
-            const elapsedSec = (now - prev.timestamp) / 1000;
-            if (elapsedSec >= thresholds.TIME) shouldRotate = true;
-        }
-        else if (rotationMode === 'RANGE') {
-            const rangeTicks = (potentialHigh - potentialLow) / CONFIG.PRICE_STEP;
-            if (rangeTicks >= thresholds.RANGE) shouldRotate = true;
-        }
-
-        if (shouldRotate) {
-             // Add the current tick to the active bar map BEFORE finalizing
-             const currentMap = activeBarMap.current;
-             const level: PriceLevelData = currentMap.get(newTick.price) || {
-                 price: newTick.price,
-                 buyVolume: 0,
-                 sellVolume: 0,
-                 totalVolume: 0,
-                 delta: 0,
-                 imbalanceBuy: false,
-                 imbalanceSell: false,
-                 stackedImbalanceBuy: false,
-                 stackedImbalanceSell: false,
-                 isPOC: false,
-                 isUnfinished: false
-             };
-
-             if (newTick.side === Side.Buy) level.buyVolume += newTick.volume;
-             else level.sellVolume += newTick.volume;
-
-             level.totalVolume += newTick.volume;
-             level.delta = level.buyVolume - level.sellVolume;
-             currentMap.set(newTick.price, level);
-
-             // Finalize Bar with the tick included
-             const processedLevels = calculateFootprintIndicators(currentMap);
-             const finishedBar: FootprintCandle = {
-                 id: prev.id,
-                 startTime: prev.startTime,
-                 endTime: nowStr,
-                 open: prev.open,
-                 close: newTick.price,
-                 high: potentialHigh,
-                 low: potentialLow,
-                 totalVolume: potentialTotalVol,
-                 delta: potentialCurrentDelta,
-                 maxDelta: potentialMaxDelta,
-                 minDelta: potentialMinDelta,
-                 priceLevels: processedLevels
-             };
-
-             setHistoryBars(prevHistory => {
-                 const newHistory = [...prevHistory, finishedBar];
-                 return newHistory;
-             });
-
-             // Clear the map for new bar
-             activeBarMap.current = new Map();
-
-             // Reset with unique ID - new bar will start with next tick
-             // CRITICAL: Use the LAST price (close of finished bar) as starting point
-             return {
-                 id: barIdCounter.current++,
-                 startTime: nowStr,
-                 timestamp: now,
-                 open: newTick.price, // Start new bar from the rotation tick's price
-                 high: newTick.price,
-                 low: newTick.price,
-                 totalVolume: 0,
-                 currentDelta: 0,
-                 maxDelta: 0,
-                 minDelta: 0
-             };
-        }
-
-        // No rotation - add tick to active bar
-        const currentMap = activeBarMap.current;
-        const level: PriceLevelData = currentMap.get(newTick.price) || {
-            price: newTick.price,
-            buyVolume: 0,
-            sellVolume: 0,
-            totalVolume: 0,
-            delta: 0,
-            imbalanceBuy: false,
-            imbalanceSell: false,
-            stackedImbalanceBuy: false,
-            stackedImbalanceSell: false,
-            isPOC: false,
-            isUnfinished: false
-        };
-
-        if (newTick.side === Side.Buy) level.buyVolume += newTick.volume;
-        else level.sellVolume += newTick.volume;
-
-        level.totalVolume += newTick.volume;
-        level.delta = level.buyVolume - level.sellVolume;
-        currentMap.set(newTick.price, level);
-
-        // Check if this is the first tick of a new bar
-        const isFirstTick = prev.totalVolume === 0;
-
-        return {
-            ...prev,
-            open: isFirstTick ? newTick.price : prev.open,
-            // CRITICAL FIX: For first tick, initialize high/low to current price
-            // This ensures Range calculation starts fresh from 0
-            high: isFirstTick ? newTick.price : potentialHigh,
-            low: isFirstTick ? newTick.price : potentialLow,
-            totalVolume: potentialTotalVol,
-            currentDelta: potentialCurrentDelta,
-            maxDelta: potentialMaxDelta,
-            minDelta: potentialMinDelta
-        };
-      });
-
-    }, useRawData ? 100 : CONFIG.TICK_RATE_MS); // 100ms for Raw Data, 200ms for Mock Data
+      processTick(newTick);
+    }, dataSource === 'raw' ? 100 : CONFIG.TICK_RATE_MS); // 100ms for Raw Data, 200ms for Mock Data
 
     return () => clearInterval(interval);
-  }, [useRawData, rotationMode, thresholds]); // Re-bind when mode/thresholds change
+  }, [dataSource, processTick]); // Re-bind when data source or processTick changes
 
   const activeBarCandle: FootprintCandle | null = useMemo(() => {
       if (activeBarStats.totalVolume === 0 && activeBarMap.current.size === 0) return null;
@@ -526,22 +564,27 @@ const App: React.FC = () => {
                 </div>
 
                 <div className="flex space-x-2 items-center">
-                    <button
-                        onClick={() => {
-                            setUseRawData(!useRawData);
-                            // Reset raw data index when toggling
-                            if (!useRawData) {
+                    <select
+                        value={dataSource}
+                        onChange={(e) => {
+                            const newSource = e.target.value as DataSource;
+                            setDataSource(newSource);
+                            // Reset raw data index when switching to raw
+                            if (newSource === 'raw') {
                                 rawTickIndexRef.current = 0;
                             }
                         }}
-                        className={`text-[10px] px-3 py-1 rounded font-semibold transition-colors border ${
-                            useRawData
-                                ? 'bg-kr-red text-white border-kr-red shadow-sm'
-                                : 'bg-gray-700 text-gray-300 hover:bg-gray-600 border-gray-600'
-                        }`}
+                        className="text-[10px] px-3 py-1 rounded font-semibold transition-colors border bg-gray-700 text-gray-300 hover:bg-gray-600 border-gray-600 cursor-pointer"
                     >
-                        {useRawData ? '📊 Raw Data' : '🎲 Mock Data'}
-                    </button>
+                        <option value="mock">🎲 Mock Data</option>
+                        <option value="raw">📊 Raw Data</option>
+                        <option value="websocket">🔴 Live WebSocket</option>
+                    </select>
+                    {dataSource === 'websocket' && (
+                        <span className="text-[10px] text-green-400 bg-gray-800 px-2 py-0.5 rounded border border-gray-700 font-mono">
+                            {wsStatus}
+                        </span>
+                    )}
                     <span className="text-[10px] text-gray-500 bg-gray-800 px-2 py-0.5 rounded border border-gray-700 font-mono">
                         History: {historyBars.length}
                     </span>
