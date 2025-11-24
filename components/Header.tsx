@@ -1,13 +1,15 @@
 import React from 'react';
 import { Activity, Wifi, Settings } from 'lucide-react';
-import { CONFIG } from '../constants';
 import { FootprintStats } from '../types';
 
 interface HeaderProps {
   stats: FootprintStats;
+  targetCode: string;
+  targetName: string;
+  onSettingsClick: () => void;
 }
 
-const Header: React.FC<HeaderProps> = ({ stats }) => {
+const Header: React.FC<HeaderProps> = ({ stats, targetCode, targetName, onSettingsClick }) => {
   return (
     <div className="sticky top-0 z-50 h-14 bg-panel-bg border-b border-border-color flex items-center justify-between px-4 shrink-0">
       <div className="flex items-center space-x-4">
@@ -16,8 +18,8 @@ const Header: React.FC<HeaderProps> = ({ stats }) => {
             <Activity className="w-5 h-5 text-kr-red" />
           </div>
           <div>
-            <h1 className="text-sm font-bold text-white leading-none">{CONFIG.TARGET_NAME}</h1>
-            <span className="text-xs text-gray-500 font-mono">{CONFIG.TARGET_CODE}</span>
+            <h1 className="text-sm font-bold text-white leading-none">{targetName}</h1>
+            <span className="text-xs text-gray-500 font-mono">{targetCode}</span>
           </div>
         </div>
 
@@ -48,7 +50,11 @@ const Header: React.FC<HeaderProps> = ({ stats }) => {
           <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
           <span className="text-xs text-gray-300">Live Simulation</span>
         </div>
-        <button className="p-2 hover:bg-gray-800 rounded text-gray-400 transition-colors">
+        <button
+          className="p-2 hover:bg-gray-800 rounded text-gray-400 hover:text-white transition-colors"
+          onClick={onSettingsClick}
+          title="종목 코드 변경"
+        >
             <Settings className="w-4 h-4" />
         </button>
       </div>

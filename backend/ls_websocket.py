@@ -113,10 +113,6 @@ class LSWebSocketClient:
                         except asyncio.TimeoutError:
                             continue
 
-                        # 원본 데이터 파일 저장
-                        f.write(message + "\n")
-                        f.flush()
-
                         try:
                             data = json.loads(message)
                         except json.JSONDecodeError:
@@ -131,6 +127,16 @@ class LSWebSocketClient:
                         if data.get("header", {}).get("tr_cd") == "US3":
                             body = data.get("body")
                             if body and isinstance(body, dict):
+                                # 필요한 데이터만 추출하여 저장 (NDJSON 형식)
+                                tick_data = {
+                                    "chetime": body.get("chetime", ""),
+                                    "price": body.get("price", ""),
+                                    "cvolume": body.get("cvolume", ""),
+                                    "cgubun": body.get("cgubun", "")
+                                }
+                                f.write(json.dumps(tick_data, ensure_ascii=False) + "\n")
+                                f.flush()
+
                                 # Frontend로 데이터 전달
                                 if self.on_data:
                                     self.on_data(body)

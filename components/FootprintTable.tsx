@@ -10,20 +10,25 @@ interface FootprintTableProps {
   activeBar: FootprintCandle | null;
   globalHigh: number;
   globalLow: number;
+  priceStep: number;
 }
 
-const FootprintTable: React.FC<FootprintTableProps> = ({ bars, activeBar, globalHigh, globalLow }) => {
+const FootprintTable: React.FC<FootprintTableProps> = ({ bars, activeBar, globalHigh, globalLow, priceStep }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const isAutoScrollEnabled = useRef<boolean>(true);
 
   // Generate Master Price List for Synchronization
   const priceRows = useMemo(() => {
+      // Align globalHigh and globalLow to priceStep boundaries
+      const alignedHigh = Math.ceil(globalHigh / priceStep) * priceStep;
+      const alignedLow = Math.floor(globalLow / priceStep) * priceStep;
+
       const rows: number[] = [];
-      for (let p = globalHigh; p >= globalLow; p -= CONFIG.PRICE_STEP) {
+      for (let p = alignedHigh; p >= alignedLow; p -= priceStep) {
           rows.push(p);
       }
       return rows;
-  }, [globalHigh, globalLow]);
+  }, [globalHigh, globalLow, priceStep]);
 
   // Detect user scroll interaction
   const handleScroll = () => {

@@ -85,6 +85,13 @@ export function connectWebSocket(
         return;
       }
 
+      // 종목 변경 알림 처리
+      if (data.type === 'code_changed') {
+        console.log('📊 종목 변경 완료:', data.code, '-', data.name);
+        onStatus?.(data.message || `종목 변경: ${data.code}`);
+        return;
+      }
+
       // LS증권 체결 데이터 처리
       const tick = convertLSDataToTick(data);
       if (tick) {
@@ -119,5 +126,24 @@ export function changeTargetCode(ws: WebSocket, code: string): void {
       type: 'change_code',
       code,
     }));
+  }
+}
+
+/**
+ * REST API를 통해 종목 정보 조회
+ * @param code 종목 코드
+ * @returns 종목 코드와 이름
+ */
+export async function fetchStockInfo(code: string): Promise<{ code: string; name: string; status: string }> {
+  try {
+    const response = await fetch(`http://localhost:8000/api/stock/${code}`);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch stock info: ${response.status}`);
+    }
+    const data = await response.json();
+    return data;
+  } catch (error) {
+    console.error('Error fetching stock info:', error);
+    throw error;
   }
 }

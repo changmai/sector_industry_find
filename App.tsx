@@ -3,13 +3,15 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import Header from './components/Header';
 import FootprintTable from './components/FootprintTable';
 import TickList from './components/TickList';
+import StockCodeChangeDialog from './components/StockCodeChangeDialog';
 import { generateTick } from './services/mockDataService';
 import { loadRawData } from './services/rawDataService';
-import { connectWebSocket } from './services/websocketDataService';
+import { connectWebSocket, changeTargetCode } from './services/websocketDataService';
 import { Tick, PriceLevelData, FootprintStats, Side, FootprintCandle } from './types';
 import { CONFIG } from './constants';
 import { calculateFootprintIndicators } from './utils';
-import { Clock, BarChart2, MoveVertical } from 'lucide-react';
+import { groupPriceLevel, PRICE_GROUPING_OPTIONS, PriceGroupingOption } from './utils/priceGrouping';
+import { Clock, BarChart2, MoveVertical, Layers } from 'lucide-react';
 
 type RotationMode = 'VOLUME' | 'TIME' | 'RANGE';
 type DataSource = 'mock' | 'raw' | 'websocket';
@@ -17,6 +19,11 @@ type DataSource = 'mock' | 'raw' | 'websocket';
 const App: React.FC = () => {
   const [ticks, setTicks] = useState<Tick[]>([]);
   const [currentPrice, setCurrentPrice] = useState(CONFIG.INITIAL_PRICE);
+
+  // --- Stock Code Management ---
+  const [targetCode, setTargetCode] = useState(CONFIG.TARGET_CODE);
+  const [targetName, setTargetName] = useState(CONFIG.TARGET_NAME);
+  const [showStockChangeDialog, setShowStockChangeDialog] = useState(false);
 
   // --- Data Source Selection ---
   const [dataSource, setDataSource] = useState<DataSource>('mock');
@@ -37,6 +44,9 @@ const App: React.FC = () => {
 
   // Temp input state for UI
   const [tempInput, setTempInput] = useState<string>("2000");
+
+  // --- Price Grouping Settings ---
+  const [priceGrouping, setPriceGrouping] = useState<PriceGroupingOption>(100);
 
   // --- Sequential Footprint State ---
   const [historyBars, setHistoryBars] = useState<FootprintCandle[]>([]);
@@ -76,6 +86,46 @@ const App: React.FC = () => {
     setTempInput(thresholds[rotationMode].toString());
   }, [rotationMode]);
 
+  // Handle stock code change
+  const handleStockCodeChange = useCallback(async (newCode: string, newName: string) => {
+    console.log(`📊 Changing stock to: ${newCode} - ${newName}`);
+
+    // Clear existing data
+    setTicks([]);
+    setHistoryBars([]);
+    setCurrentPrice(CONFIG.INITIAL_PRICE);
+    allTicksHistory.current = [];
+    activeBarMap.current = new Map();
+    barIdCounter.current = 1;
+    rawTickIndexRef.current = 0;
+
+    // Reset active bar stats
+    setActiveBarStats({
+      id: barIdCounter.current++,
+      startTime: new Date().toTimeString().split(' ')[0],
+      timestamp: Date.now(),
+      open: CONFIG.INITIAL_PRICE,
+      high: CONFIG.INITIAL_PRICE,
+      low: CONFIG.INITIAL_PRICE,
+      totalVolume: 0,
+      currentDelta: 0,
+      maxDelta: 0,
+      minDelta: 0
+    });
+
+    // Update stock info
+    setTargetCode(newCode);
+    setTargetName(newName);
+
+    // Send WebSocket message to backend if connected
+    if (dataSource === 'websocket' && wsRef.current?.readyState === WebSocket.OPEN) {
+      changeTargetCode(wsRef.current, newCode);
+    }
+
+    // Close dialog
+    setShowStockChangeDialog(false);
+  }, [dataSource]);
+
   // Load Raw Data when mode is enabled
   useEffect(() => {
     if (dataSource === 'raw' && rawTicksRef.current.length === 0) {
@@ -91,7 +141,7 @@ const App: React.FC = () => {
   }, [dataSource]);
 
   // Recalculate all bars when rotation mode or thresholds change
-  const recalculateBars = (mode: RotationMode, threshold: number) => {
+  const recalculateBars = (mode: RotationMode, threshold: number, grouping: number) => {
     const allTicks = allTicksHistory.current;
     if (allTicks.length === 0) return;
 
@@ -100,9 +150,9 @@ const App: React.FC = () => {
     let barId = 1;
     let barStartTime = allTicks[0].time;
     let barTimestamp = allTicks[0].timestamp;
-    let barOpen = allTicks[0].price;
-    let barHigh = allTicks[0].price;
-    let barLow = allTicks[0].price;
+    let barOpen = groupPriceLevel(allTicks[0].price, grouping);
+    let barHigh = groupPriceLevel(allTicks[0].price, grouping);
+    let barLow = groupPriceLevel(allTicks[0].price, grouping);
     let barTotalVolume = 0;
     let barCurrentDelta = 0;
     let barMaxDelta = 0;
@@ -110,10 +160,11 @@ const App: React.FC = () => {
 
     for (let i = 0; i < allTicks.length; i++) {
       const tick = allTicks[i];
+      const groupedPrice = groupPriceLevel(tick.price, grouping);
 
-      // Add tick to current bar
-      const level: PriceLevelData = currentBarMap.get(tick.price) || {
-        price: tick.price,
+      // Add tick to current bar (with grouped price)
+      const level: PriceLevelData = currentBarMap.get(groupedPrice) || {
+        price: groupedPrice,
         buyVolume: 0,
         sellVolume: 0,
         totalVolume: 0,
@@ -131,13 +182,13 @@ const App: React.FC = () => {
 
       level.totalVolume += tick.volume;
       level.delta = level.buyVolume - level.sellVolume;
-      currentBarMap.set(tick.price, level);
+      currentBarMap.set(groupedPrice, level);
 
       // Update bar stats
       const tickDelta = tick.side === Side.Buy ? tick.volume : -tick.volume;
       barTotalVolume += tick.volume;
-      barHigh = Math.max(barHigh, tick.price);
-      barLow = Math.min(barLow, tick.price);
+      barHigh = Math.max(barHigh, groupedPrice);
+      barLow = Math.min(barLow, groupedPrice);
       barCurrentDelta += tickDelta;
       barMaxDelta = Math.max(barMaxDelta, barCurrentDelta);
       barMinDelta = Math.min(barMinDelta, barCurrentDelta);
@@ -151,7 +202,7 @@ const App: React.FC = () => {
         const elapsedSec = (tick.timestamp - barTimestamp) / 1000;
         if (elapsedSec >= threshold) shouldRotate = true;
       } else if (mode === 'RANGE') {
-        const rangeTicks = (barHigh - barLow) / CONFIG.PRICE_STEP;
+        const rangeTicks = (barHigh - barLow) / grouping;
         if (rangeTicks >= threshold) shouldRotate = true;
       }
 
@@ -182,9 +233,9 @@ const App: React.FC = () => {
         if (i < allTicks.length - 1) {
           barStartTime = tick.time;
           barTimestamp = tick.timestamp;
-          barOpen = tick.price;
-          barHigh = tick.price;
-          barLow = tick.price;
+          barOpen = groupedPrice;
+          barHigh = groupedPrice;
+          barLow = groupedPrice;
           barTotalVolume = 0;
           barCurrentDelta = 0;
           barMaxDelta = 0;
@@ -214,12 +265,12 @@ const App: React.FC = () => {
     });
   };
 
-  // Trigger recalculation when mode or threshold changes
+  // Trigger recalculation when mode, threshold, or price grouping changes
   useEffect(() => {
     if (allTicksHistory.current.length > 0) {
-      recalculateBars(rotationMode, thresholds[rotationMode]);
+      recalculateBars(rotationMode, thresholds[rotationMode], priceGrouping);
     }
-  }, [rotationMode, thresholds]);
+  }, [rotationMode, thresholds, priceGrouping]);
 
   // --- Derived Stats for Header ---
   const headerStats: FootprintStats = useMemo(() => {
@@ -271,6 +322,7 @@ const App: React.FC = () => {
   const processTick = useCallback((newTick: Tick) => {
     const now = Date.now();
     const nowStr = new Date(now).toTimeString().split(' ')[0];
+    const groupedPrice = groupPriceLevel(newTick.price, priceGrouping);
 
     setCurrentPrice(newTick.price);
 
@@ -287,8 +339,8 @@ const App: React.FC = () => {
     // Check rotation BEFORE adding the tick
     setActiveBarStats(prev => {
         const potentialTotalVol = prev.totalVolume + newTick.volume;
-        const potentialHigh = Math.max(prev.high, newTick.price);
-        const potentialLow = Math.min(prev.low, newTick.price);
+        const potentialHigh = Math.max(prev.high, groupedPrice);
+        const potentialLow = Math.min(prev.low, groupedPrice);
 
       const tickDelta = newTick.side === Side.Buy ? newTick.volume : -newTick.volume;
       const potentialCurrentDelta = prev.currentDelta + tickDelta;
@@ -306,15 +358,15 @@ const App: React.FC = () => {
           if (elapsedSec >= thresholds.TIME) shouldRotate = true;
       }
       else if (rotationMode === 'RANGE') {
-          const rangeTicks = (potentialHigh - potentialLow) / CONFIG.PRICE_STEP;
+          const rangeTicks = (potentialHigh - potentialLow) / priceGrouping;
           if (rangeTicks >= thresholds.RANGE) shouldRotate = true;
       }
 
       if (shouldRotate) {
            // Add the current tick to the active bar map BEFORE finalizing
            const currentMap = activeBarMap.current;
-           const level: PriceLevelData = currentMap.get(newTick.price) || {
-               price: newTick.price,
+           const level: PriceLevelData = currentMap.get(groupedPrice) || {
+               price: groupedPrice,
                buyVolume: 0,
                sellVolume: 0,
                totalVolume: 0,
@@ -332,7 +384,7 @@ const App: React.FC = () => {
 
            level.totalVolume += newTick.volume;
            level.delta = level.buyVolume - level.sellVolume;
-           currentMap.set(newTick.price, level);
+           currentMap.set(groupedPrice, level);
 
            // Finalize Bar with the tick included
            const processedLevels = calculateFootprintIndicators(currentMap);
@@ -341,7 +393,7 @@ const App: React.FC = () => {
                startTime: prev.startTime,
                endTime: nowStr,
                open: prev.open,
-               close: newTick.price,
+               close: groupedPrice,
                high: potentialHigh,
                low: potentialLow,
                totalVolume: potentialTotalVol,
@@ -365,9 +417,9 @@ const App: React.FC = () => {
                id: barIdCounter.current++,
                startTime: nowStr,
                timestamp: now,
-               open: newTick.price, // Start new bar from the rotation tick's price
-               high: newTick.price,
-               low: newTick.price,
+               open: groupedPrice, // Start new bar from the rotation tick's grouped price
+               high: groupedPrice,
+               low: groupedPrice,
                totalVolume: 0,
                currentDelta: 0,
                maxDelta: 0,
@@ -377,8 +429,8 @@ const App: React.FC = () => {
 
       // No rotation - add tick to active bar
       const currentMap = activeBarMap.current;
-      const level: PriceLevelData = currentMap.get(newTick.price) || {
-          price: newTick.price,
+      const level: PriceLevelData = currentMap.get(groupedPrice) || {
+          price: groupedPrice,
           buyVolume: 0,
           sellVolume: 0,
           totalVolume: 0,
@@ -396,25 +448,25 @@ const App: React.FC = () => {
 
       level.totalVolume += newTick.volume;
       level.delta = level.buyVolume - level.sellVolume;
-      currentMap.set(newTick.price, level);
+      currentMap.set(groupedPrice, level);
 
       // Check if this is the first tick of a new bar
       const isFirstTick = prev.totalVolume === 0;
 
       return {
           ...prev,
-          open: isFirstTick ? newTick.price : prev.open,
+          open: isFirstTick ? groupedPrice : prev.open,
           // CRITICAL FIX: For first tick, initialize high/low to current price
           // This ensures Range calculation starts fresh from 0
-          high: isFirstTick ? newTick.price : potentialHigh,
-          low: isFirstTick ? newTick.price : potentialLow,
+          high: isFirstTick ? groupedPrice : potentialHigh,
+          low: isFirstTick ? groupedPrice : potentialLow,
           totalVolume: potentialTotalVol,
           currentDelta: potentialCurrentDelta,
           maxDelta: potentialMaxDelta,
           minDelta: potentialMinDelta
       };
     });
-  }, [rotationMode, thresholds]); // Dependencies: only recreate when rotation settings change
+  }, [rotationMode, thresholds, priceGrouping]); // Dependencies: recreate when rotation settings or price grouping change
 
   // --- WebSocket Connection (separate from tick processing) ---
   useEffect(() => {
@@ -515,7 +567,12 @@ const App: React.FC = () => {
 
   return (
     <div className="h-screen w-screen bg-dark-bg text-white flex flex-col font-sans selection:bg-gray-700">
-      <Header stats={headerStats} />
+      <Header
+        stats={headerStats}
+        targetCode={targetCode}
+        targetName={targetName}
+        onSettingsClick={() => setShowStockChangeDialog(true)}
+      />
 
       <main className="flex-1 flex overflow-hidden p-1 gap-1">
         {/* Left Panel */}
@@ -553,13 +610,31 @@ const App: React.FC = () => {
                                 className="bg-gray-800 border border-gray-600 text-white px-1 py-0.5 rounded w-12 text-center focus:border-kr-blue outline-none"
                             />
                             <span className="text-gray-500 ml-1 mr-2">{meta.unit}</span>
-                            <button 
+                            <button
                                 onClick={applySettings}
                                 className="bg-gray-700 hover:bg-gray-600 text-gray-200 px-2 py-0.5 rounded transition-colors border border-gray-600"
                             >
                                 Set
                             </button>
                         </div>
+                    </div>
+
+                    <div className="h-4 w-px bg-gray-700"></div>
+
+                    {/* Price Grouping Controls */}
+                    <div className="flex items-center space-x-2 text-[10px]">
+                        <Layers className="w-3 h-3 text-purple-400" />
+                        <span className="text-gray-400 font-semibold">Price Step:</span>
+                        <select
+                            value={priceGrouping}
+                            onChange={(e) => setPriceGrouping(Number(e.target.value) as PriceGroupingOption)}
+                            className="bg-gray-800 border border-gray-600 text-white text-[10px] px-1 py-0.5 rounded outline-none focus:border-purple-400 cursor-pointer"
+                        >
+                            {PRICE_GROUPING_OPTIONS.map(option => (
+                                <option key={option} value={option}>{option}</option>
+                            ))}
+                        </select>
+                        <span className="text-gray-500 text-[9px]">원</span>
                     </div>
                 </div>
 
@@ -591,11 +666,12 @@ const App: React.FC = () => {
                 </div>
             </div>
             
-            <FootprintTable 
-                bars={historyBars} 
+            <FootprintTable
+                bars={historyBars}
                 activeBar={activeBarCandle}
                 globalHigh={globalHigh}
                 globalLow={globalLow}
+                priceStep={priceGrouping}
             />
         </div>
 
@@ -604,6 +680,14 @@ const App: React.FC = () => {
             <TickList ticks={ticks} />
         </div>
       </main>
+
+      {/* Stock Code Change Dialog */}
+      <StockCodeChangeDialog
+        isOpen={showStockChangeDialog}
+        onClose={() => setShowStockChangeDialog(false)}
+        onApply={handleStockCodeChange}
+        initialCode={targetCode}
+      />
     </div>
   );
 };
