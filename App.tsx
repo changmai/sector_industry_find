@@ -6,7 +6,7 @@ import TickList from './components/TickList';
 import StockCodeChangeDialog from './components/StockCodeChangeDialog';
 import { generateTick } from './services/mockDataService';
 import { loadRawData } from './services/rawDataService';
-import { connectWebSocket, changeTargetCode } from './services/websocketDataService';
+import { connectWebSocket, changeTargetCode, fetchHistoricalData } from './services/websocketDataService';
 import { Tick, PriceLevelData, FootprintStats, Side, FootprintCandle } from './types';
 import { CONFIG } from './constants';
 import { calculateFootprintIndicators } from './utils';
@@ -26,27 +26,27 @@ const App: React.FC = () => {
   const [showStockChangeDialog, setShowStockChangeDialog] = useState(false);
 
   // --- Data Source Selection ---
-  const [dataSource, setDataSource] = useState<DataSource>('mock');
+  const [dataSource, setDataSource] = useState<DataSource>('websocket');
   const [wsStatus, setWsStatus] = useState<string>('준비');
   const rawTicksRef = useRef<Tick[]>([]);
   const rawTickIndexRef = useRef(0);
   const wsRef = useRef<WebSocket | null>(null);
 
   // --- Rotation Settings ---
-  const [rotationMode, setRotationMode] = useState<RotationMode>('VOLUME');
+  const [rotationMode, setRotationMode] = useState<RotationMode>('RANGE');
 
   // Thresholds for each mode
   const [thresholds, setThresholds] = useState({
-    VOLUME: 2000,
-    TIME: 30, // seconds
+    VOLUME: 50000,
+    TIME: 600, // seconds (10 minutes)
     RANGE: 10 // ticks (e.g., 10 * 100 = 1000 price range)
   });
 
   // Temp input state for UI
-  const [tempInput, setTempInput] = useState<string>("2000");
+  const [tempInput, setTempInput] = useState<string>("10");
 
   // --- Price Grouping Settings ---
-  const [priceGrouping, setPriceGrouping] = useState<PriceGroupingOption>(100);
+  const [priceGrouping, setPriceGrouping] = useState<PriceGroupingOption>(1000);
 
   // --- Sequential Footprint State ---
   const [historyBars, setHistoryBars] = useState<FootprintCandle[]>([]);
@@ -90,41 +90,95 @@ const App: React.FC = () => {
   const handleStockCodeChange = useCallback(async (newCode: string, newName: string) => {
     console.log(`📊 Changing stock to: ${newCode} - ${newName}`);
 
-    // Clear existing data
-    setTicks([]);
-    setHistoryBars([]);
-    setCurrentPrice(CONFIG.INITIAL_PRICE);
-    allTicksHistory.current = [];
-    activeBarMap.current = new Map();
-    barIdCounter.current = 1;
-    rawTickIndexRef.current = 0;
+    // WebSocket 모드인 경우: 과거 데이터 먼저 로드
+    if (dataSource === 'websocket') {
+      console.log('📥 Loading historical data for', newCode);
 
-    // Reset active bar stats
-    setActiveBarStats({
-      id: barIdCounter.current++,
-      startTime: new Date().toTimeString().split(' ')[0],
-      timestamp: Date.now(),
-      open: CONFIG.INITIAL_PRICE,
-      high: CONFIG.INITIAL_PRICE,
-      low: CONFIG.INITIAL_PRICE,
-      totalVolume: 0,
-      currentDelta: 0,
-      maxDelta: 0,
-      minDelta: 0
-    });
+      // watchlist 확인 (서버에서 구독 중인지)
+      try {
+        const serverInfo = await fetch(`${window.location.protocol}//${'localhost'}:8000/`).then(r => r.json());
+        const watchlist = serverInfo.watchlist || [];
+        if (!watchlist.includes(newCode)) {
+          console.warn(`⚠️ ${newCode} is not in server watchlist. Real-time data will not be available.`);
+          console.warn(`💡 Add "${newCode}" to backend/watchlist.json and restart server for live data.`);
+        }
+      } catch (err) {
+        console.error('Failed to check watchlist:', err);
+      }
+
+      // 1. 과거 데이터 fetch
+      const historicalTicks = await fetchHistoricalData(newCode);
+
+      // 2. 상태 초기화 (과거 데이터로)
+      if (historicalTicks.length > 0) {
+        console.log(`✅ Loaded ${historicalTicks.length} historical ticks`);
+        allTicksHistory.current = historicalTicks;
+
+        // TickList 표시용으로 최근 200개만
+        setTicks(historicalTicks.slice(0, 200));
+
+        // 과거 데이터로 차트 재계산
+        recalculateBars(rotationMode, thresholds[rotationMode], priceGrouping);
+
+        // 최신 틱으로 현재가 설정
+        const latestTick = historicalTicks[0]; // 최신 데이터가 앞에 있다고 가정
+        setCurrentPrice(latestTick.price);
+      } else {
+        console.log('⚠️ No historical data found, starting fresh');
+        // 데이터 없으면 초기화
+        allTicksHistory.current = [];
+        setHistoryBars([]);
+        setTicks([]);
+        activeBarMap.current = new Map();
+        barIdCounter.current = 1;
+
+        setActiveBarStats({
+          id: barIdCounter.current++,
+          startTime: new Date().toTimeString().split(' ')[0],
+          timestamp: Date.now(),
+          open: CONFIG.INITIAL_PRICE,
+          high: CONFIG.INITIAL_PRICE,
+          low: CONFIG.INITIAL_PRICE,
+          totalVolume: 0,
+          currentDelta: 0,
+          maxDelta: 0,
+          minDelta: 0
+        });
+      }
+    } else {
+      // Mock/Raw 모드인 경우: 기존대로 초기화
+      setTicks([]);
+      setHistoryBars([]);
+      setCurrentPrice(CONFIG.INITIAL_PRICE);
+      allTicksHistory.current = [];
+      activeBarMap.current = new Map();
+      barIdCounter.current = 1;
+      rawTickIndexRef.current = 0;
+
+      setActiveBarStats({
+        id: barIdCounter.current++,
+        startTime: new Date().toTimeString().split(' ')[0],
+        timestamp: Date.now(),
+        open: CONFIG.INITIAL_PRICE,
+        high: CONFIG.INITIAL_PRICE,
+        low: CONFIG.INITIAL_PRICE,
+        totalVolume: 0,
+        currentDelta: 0,
+        maxDelta: 0,
+        minDelta: 0
+      });
+    }
 
     // Update stock info
     setTargetCode(newCode);
     setTargetName(newName);
 
-    // Send WebSocket message to backend if connected
-    if (dataSource === 'websocket' && wsRef.current?.readyState === WebSocket.OPEN) {
-      changeTargetCode(wsRef.current, newCode);
-    }
+    // WebSocket은 이미 모든 종목을 구독 중이므로 changeTargetCode 불필요
+    // (Frontend에서 filterCode만 변경하면 됨)
 
     // Close dialog
     setShowStockChangeDialog(false);
-  }, [dataSource]);
+  }, [dataSource, rotationMode, thresholds, priceGrouping]);
 
   // Load Raw Data when mode is enabled
   useEffect(() => {
@@ -137,6 +191,34 @@ const App: React.FC = () => {
       }).catch(err => {
         console.error('❌ Failed to load raw data:', err);
       });
+    }
+  }, [dataSource]);
+
+  // Load Historical Data when switching to WebSocket mode (only once on mount)
+  const initialLoadDone = useRef(false);
+
+  useEffect(() => {
+    if (dataSource === 'websocket' && !initialLoadDone.current) {
+      initialLoadDone.current = true;
+      console.log('📥 Loading historical data for initial load:', targetCode);
+      fetchHistoricalData(targetCode).then(historicalTicks => {
+        if (historicalTicks.length > 0) {
+          console.log(`✅ Initial load: ${historicalTicks.length} historical ticks`);
+          allTicksHistory.current = historicalTicks;
+          setTicks(historicalTicks.slice(0, 200));
+          recalculateBars(rotationMode, thresholds[rotationMode], priceGrouping);
+          setCurrentPrice(historicalTicks[0].price);
+        } else {
+          console.log('⚠️ No historical data for initial load');
+        }
+      }).catch(err => {
+        console.error('❌ Failed to load historical data:', err);
+      });
+    }
+
+    // dataSource가 변경되면 reset
+    if (dataSource !== 'websocket') {
+      initialLoadDone.current = false;
     }
   }, [dataSource]);
 
@@ -469,11 +551,30 @@ const App: React.FC = () => {
   }, [rotationMode, thresholds, priceGrouping]); // Dependencies: recreate when rotation settings or price grouping change
 
   // --- WebSocket Connection (separate from tick processing) ---
+  // filterCode를 ref로 관리하여 재연결 없이 필터만 변경
+  const filterCodeRef = useRef(targetCode);
+  const processTickRef = useRef(processTick);
+
+  // processTick ref 업데이트 (재연결 없이)
+  useEffect(() => {
+    processTickRef.current = processTick;
+  }, [processTick]);
+
+  useEffect(() => {
+    filterCodeRef.current = targetCode;
+  }, [targetCode]);
+
   useEffect(() => {
     if (dataSource === 'websocket') {
       const ws = connectWebSocket(
-        (tick) => {
-          processTick(tick);
+        (tick: any) => {
+          // 종목코드로 필터링 (Backend가 모든 종목 데이터를 브로드캐스트하므로)
+          if (tick.code && tick.code === filterCodeRef.current) {
+            processTickRef.current(tick);
+          } else if (!tick.code) {
+            // code 필드가 없으면 그냥 처리 (Legacy 호환)
+            processTickRef.current(tick);
+          }
         },
         (error) => {
           console.error('WebSocket Error:', error);
@@ -481,7 +582,8 @@ const App: React.FC = () => {
         },
         (status) => {
           setWsStatus(status);
-        }
+        },
+        targetCode  // 초기 filterCode 전달 (참고용)
       );
 
       wsRef.current = ws;
@@ -491,7 +593,7 @@ const App: React.FC = () => {
         wsRef.current = null;
       };
     }
-  }, [dataSource, processTick]); // Reconnect when data source changes or processTick updates
+  }, [dataSource]); // processTick 제거: 재연결 방지
 
   // --- Mock/Raw Data Tick Loop ---
   useEffect(() => {
@@ -687,6 +789,7 @@ const App: React.FC = () => {
         onClose={() => setShowStockChangeDialog(false)}
         onApply={handleStockCodeChange}
         initialCode={targetCode}
+        dataSource={dataSource}
       />
     </div>
   );

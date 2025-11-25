@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { fetchStockInfo } from '../services/websocketDataService';
+import { fetchStockInfo, subscribeToStock } from '../services/websocketDataService';
 import './StockCodeChangeDialog.css';
 
 interface StockCodeChangeDialogProps {
@@ -7,24 +7,28 @@ interface StockCodeChangeDialogProps {
   onClose: () => void;
   onApply: (code: string, name: string) => void;
   initialCode: string;
+  dataSource?: 'mock' | 'raw' | 'websocket'; // 데이터 소스 (WebSocket 모드일 때만 구독 버튼 표시)
 }
 
 const StockCodeChangeDialog: React.FC<StockCodeChangeDialogProps> = ({
   isOpen,
   onClose,
   onApply,
-  initialCode
+  initialCode,
+  dataSource = 'mock'
 }) => {
   const [inputCode, setInputCode] = useState(initialCode);
   const [stockName, setStockName] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [subscribeStatus, setSubscribeStatus] = useState<string | null>(null);
 
   useEffect(() => {
     if (isOpen) {
       setInputCode(initialCode);
       setStockName('');
       setError(null);
+      setSubscribeStatus(null);
     }
   }, [isOpen, initialCode]);
 
@@ -52,6 +56,32 @@ const StockCodeChangeDialog: React.FC<StockCodeChangeDialogProps> = ({
   const handleApply = () => {
     if (inputCode && stockName) {
       onApply(inputCode, stockName);
+    }
+  };
+
+  const handleSubscribe = async () => {
+    if (!inputCode.trim()) {
+      setError('종목 코드를 입력하세요');
+      return;
+    }
+
+    setIsLoading(true);
+    setSubscribeStatus(null);
+    setError(null);
+
+    try {
+      const result = await subscribeToStock(inputCode);
+      if (result.status === 'success') {
+        setSubscribeStatus(`✅ ${result.message}`);
+      } else if (result.status === 'already_subscribed') {
+        setSubscribeStatus(`ℹ️ 이미 구독 중인 종목입니다`);
+      } else {
+        setSubscribeStatus(`⚠️ ${result.message}`);
+      }
+    } catch (err) {
+      setError('구독 요청 실패');
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -104,6 +134,10 @@ const StockCodeChangeDialog: React.FC<StockCodeChangeDialogProps> = ({
           {error && (
             <div className="error-message">{error}</div>
           )}
+
+          {subscribeStatus && (
+            <div className="subscribe-status">{subscribeStatus}</div>
+          )}
         </div>
 
         <div className="dialog-footer">
@@ -114,6 +148,16 @@ const StockCodeChangeDialog: React.FC<StockCodeChangeDialogProps> = ({
           >
             취소
           </button>
+          {dataSource === 'websocket' && (
+            <button
+              className="subscribe-button"
+              onClick={handleSubscribe}
+              disabled={!inputCode.trim() || isLoading}
+              title="Watchlist에 종목 추가 (서버 재시작 불필요)"
+            >
+              Watchlist 추가
+            </button>
+          )}
           <button
             className="apply-button"
             onClick={handleApply}

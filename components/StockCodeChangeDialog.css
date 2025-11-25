@@ -162,6 +162,16 @@
   margin-top: 10px;
 }
 
+.subscribe-status {
+  padding: 10px;
+  background-color: rgba(0, 200, 83, 0.1);
+  border: 1px solid rgba(0, 200, 83, 0.3);
+  color: #00c853;
+  border-radius: 4px;
+  font-size: 14px;
+  margin-top: 10px;
+}
+
 .dialog-footer {
   padding: 16px 20px;
   border-top: 1px solid #333;
@@ -171,7 +181,8 @@
 }
 
 .cancel-button,
-.apply-button {
+.apply-button,
+.subscribe-button {
   padding: 8px 24px;
   border: none;
   border-radius: 4px;
@@ -189,6 +200,15 @@
   background-color: #555;
 }
 
+.subscribe-button {
+  background-color: #ff9800;
+  color: white;
+}
+
+.subscribe-button:hover:not(:disabled) {
+  background-color: #e68900;
+}
+
 .apply-button {
   background-color: #00c853;
   color: white;
@@ -199,7 +219,8 @@
 }
 
 .cancel-button:disabled,
-.apply-button:disabled {
+.apply-button:disabled,
+.subscribe-button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
