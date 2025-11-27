@@ -1,6 +1,5 @@
 
-import React, { useRef, useEffect, useMemo, useCallback } from 'react';
-import { Grid, CellComponentProps, GridImperativeAPI } from 'react-window';
+import React, { useRef, useEffect, useMemo, useCallback, useState } from 'react';
 import { FootprintCandle } from '../types';
 import FootprintBarComponent from './FootprintBarComponent';
 import { Magnet, Ban } from 'lucide-react';
@@ -15,93 +14,93 @@ interface FootprintTableProps {
 }
 
 // Constants for virtualization
-const BAR_WIDTH = 130; // Width of each bar (120px + margin)
+const BAR_WIDTH = 130;
 const HEADER_HEIGHT = 35;
-
-// Cell props type for react-window v2 (must NOT contain forbidden keys)
-interface BarCellProps {
-  allBars: FootprintCandle[];
-  activeBar: FootprintCandle | null;
-  priceRows: number[];
-}
-
-// Cell component for Grid - receives built-in props + custom cellProps
-const BarCell = ({
-  columnIndex,
-  style,
-  allBars,
-  activeBar,
-  priceRows
-}: CellComponentProps<BarCellProps>) => {
-  const bar = allBars[columnIndex];
-  if (!bar) return <div style={style} />;
-
-  const isActive = activeBar ? bar.id === activeBar.id : false;
-
-  return (
-    <div style={style}>
-      <FootprintBarComponent
-        candle={bar}
-        isActive={isActive}
-        priceRows={priceRows}
-      />
-    </div>
-  );
-};
+const OVERSCAN = 2; // Extra bars to render outside viewport
 
 const FootprintTable: React.FC<FootprintTableProps> = ({ bars, activeBar, globalHigh, globalLow, priceStep }) => {
-  const gridRef = useRef<GridImperativeAPI>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const isAutoScrollEnabled = useRef<boolean>(true);
+  const prevBarsLengthRef = useRef<number>(0);
+  const prevPriceStepRef = useRef<number>(priceStep);
 
-  // Generate Master Price List for Synchronization
+  // Ref for stable access to bars (avoids renderedBars dependency on entire array)
+  const barsRef = useRef(bars);
+  barsRef.current = bars;
+
+  // Container dimensions
+  const [containerWidth, setContainerWidth] = useState(800);
+  const [scrollLeft, setScrollLeft] = useState(0);
+
+  // Generate Master Price List - stabilized to prevent unnecessary re-renders
+  const priceRowsRef = useRef<number[]>([]);
+  const prevRangeRef = useRef({ high: 0, low: 0, step: 0 });
+
   const priceRows = useMemo(() => {
-      const alignedHigh = Math.ceil(globalHigh / priceStep) * priceStep;
-      const alignedLow = Math.floor(globalLow / priceStep) * priceStep;
+    const alignedHigh = Math.ceil(globalHigh / priceStep) * priceStep;
+    const alignedLow = Math.floor(globalLow / priceStep) * priceStep;
 
-      const rows: number[] = [];
-      for (let p = alignedHigh; p >= alignedLow; p -= priceStep) {
-          rows.push(p);
-      }
-      return rows;
+    // Only regenerate if range actually changed significantly
+    const prev = prevRangeRef.current;
+    if (
+      prev.high === alignedHigh &&
+      prev.low === alignedLow &&
+      prev.step === priceStep &&
+      priceRowsRef.current.length > 0
+    ) {
+      return priceRowsRef.current;
+    }
+
+    const rows: number[] = [];
+    for (let p = alignedHigh; p >= alignedLow; p -= priceStep) {
+      rows.push(p);
+    }
+
+    prevRangeRef.current = { high: alignedHigh, low: alignedLow, step: priceStep };
+    priceRowsRef.current = rows;
+    return rows;
   }, [globalHigh, globalLow, priceStep]);
 
-  // Combine bars and activeBar for rendering
-  const allBars = useMemo(() => {
-    const result = [...bars];
-    if (activeBar) {
-      result.push(activeBar);
-    }
-    return result;
-  }, [bars, activeBar]);
-
-  // Calculate exact heights for synchronization
+  // Calculate heights
   const chartBodyHeight = priceRows.length * ROW_HEIGHT;
   const STATS_HEIGHT = ROW_HEIGHT * 4;
   const totalRowHeight = HEADER_HEIGHT + chartBodyHeight + STATS_HEIGHT;
 
-  // Auto-scroll to right when new bars are added
-  useEffect(() => {
-    if (gridRef.current && isAutoScrollEnabled.current && allBars.length > 0) {
-      gridRef.current.scrollToColumn({
-        index: allBars.length - 1,
-        align: 'end',
-        behavior: 'auto'
-      });
-    }
-  }, [allBars.length, gridRef]);
+  // Total content width
+  const totalBars = bars.length + (activeBar ? 1 : 0);
+  const totalContentWidth = totalBars * BAR_WIDTH;
 
-  // Handle scroll to detect user interaction
+  // Calculate visible range (direct virtualization)
+  const visibleRange = useMemo(() => {
+    const startIdx = Math.max(0, Math.floor(scrollLeft / BAR_WIDTH) - OVERSCAN);
+    const visibleCount = Math.ceil(containerWidth / BAR_WIDTH) + OVERSCAN * 2;
+    const endIdx = Math.min(totalBars, startIdx + visibleCount);
+    return { startIdx, endIdx };
+  }, [scrollLeft, containerWidth, totalBars]);
+
+  // Handle scroll
   const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
     const target = e.currentTarget;
-    const { scrollLeft, scrollWidth, clientWidth } = target;
-    // If user is within 100px of the right edge, enable auto-scroll
-    isAutoScrollEnabled.current = scrollWidth - clientWidth - scrollLeft < 100;
+    setScrollLeft(target.scrollLeft);
+
+    // Auto-scroll detection
+    const { scrollWidth, clientWidth } = target;
+    isAutoScrollEnabled.current = scrollWidth - clientWidth - target.scrollLeft < 100;
   }, []);
 
-  // Container dimensions - use ResizeObserver
-  const [containerWidth, setContainerWidth] = React.useState(800);
+  // Auto-scroll to right when new bars are added
+  useEffect(() => {
+    if (scrollContainerRef.current && isAutoScrollEnabled.current) {
+      const newLength = bars.length + (activeBar ? 1 : 0);
+      if (newLength > prevBarsLengthRef.current || newLength === prevBarsLengthRef.current) {
+        scrollContainerRef.current.scrollLeft = totalContentWidth;
+      }
+      prevBarsLengthRef.current = newLength;
+    }
+  }, [bars.length, activeBar, totalContentWidth]);
 
+  // Container resize observer
   useEffect(() => {
     const updateSize = () => {
       if (containerRef.current) {
@@ -120,12 +119,69 @@ const FootprintTable: React.FC<FootprintTableProps> = ({ bars, activeBar, global
     return () => resizeObserver.disconnect();
   }, []);
 
-  // Cell props for react-window (only custom props, not forbidden keys)
-  const cellProps: BarCellProps = useMemo(() => ({
-    allBars,
-    activeBar,
-    priceRows
-  }), [allBars, activeBar, priceRows]);
+  // Auto-scroll Y-axis when priceStep changes to center on active data
+  useEffect(() => {
+    if (prevPriceStepRef.current !== priceStep && scrollContainerRef.current) {
+      // Get the target price to center on (activeBar or last history bar)
+      const targetBar = activeBar || (bars.length > 0 ? bars[bars.length - 1] : null);
+
+      if (targetBar) {
+        // Calculate center price of the target bar
+        const centerPrice = (targetBar.high + targetBar.low) / 2;
+
+        // Calculate aligned prices for current priceStep
+        const alignedHigh = Math.ceil(globalHigh / priceStep) * priceStep;
+
+        // Calculate row index for center price
+        const rowIndex = Math.floor((alignedHigh - centerPrice) / priceStep);
+
+        // Calculate scroll position to center this row in viewport
+        const targetScrollTop = (rowIndex * ROW_HEIGHT) - (scrollContainerRef.current.clientHeight / 2) + HEADER_HEIGHT;
+
+        // Apply scroll with bounds check
+        scrollContainerRef.current.scrollTop = Math.max(0, targetScrollTop);
+      }
+
+      prevPriceStepRef.current = priceStep;
+    }
+  }, [priceStep, globalHigh, activeBar, bars]);
+
+  // Render visible bars only
+  // Optimized: Uses barsRef to avoid dependency on entire bars array
+  const barsLength = bars.length;
+  const renderedBars = useMemo(() => {
+    const elements: React.ReactNode[] = [];
+    const { startIdx, endIdx } = visibleRange;
+    const currentBars = barsRef.current;
+
+    for (let i = startIdx; i < endIdx; i++) {
+      const isActiveBarIndex = i === barsLength && activeBar;
+      const bar = isActiveBarIndex ? activeBar : currentBars[i];
+
+      if (!bar) continue;
+
+      elements.push(
+        <div
+          key={bar.id}
+          style={{
+            position: 'absolute',
+            left: i * BAR_WIDTH,
+            top: 0,
+            width: BAR_WIDTH,
+            height: totalRowHeight,
+          }}
+        >
+          <FootprintBarComponent
+            candle={bar}
+            isActive={!!isActiveBarIndex}
+            priceRows={priceRows}
+          />
+        </div>
+      );
+    }
+
+    return elements;
+  }, [visibleRange, barsLength, activeBar, priceRows, totalRowHeight]);
 
   return (
     <div
@@ -155,29 +211,28 @@ const FootprintTable: React.FC<FootprintTableProps> = ({ bars, activeBar, global
           </div>
         </div>
 
-        {/* Virtualized Bar Grid (1 row, N columns) */}
-        <div className="flex-1 overflow-hidden" onScroll={handleScroll}>
-          {allBars.length === 0 ? (
+        {/* Direct Virtualized Scroll Container */}
+        <div
+          ref={scrollContainerRef}
+          className="flex-1 overflow-x-auto overflow-y-auto custom-scrollbar gpu-accelerated"
+          onScroll={handleScroll}
+          style={{ height: totalRowHeight + 20 }}
+        >
+          {totalBars === 0 ? (
             <div className="h-full flex items-center justify-center text-gray-600">
               Waiting for market data...
             </div>
           ) : (
-            <Grid<BarCellProps>
-              gridRef={gridRef}
-              columnCount={allBars.length}
-              columnWidth={BAR_WIDTH}
-              rowCount={1}
-              rowHeight={totalRowHeight}
-              cellComponent={BarCell}
-              cellProps={cellProps}
-              overscanCount={3}
-              className="custom-scrollbar"
+            <div
               style={{
-                overflowY: 'auto',
-                width: containerWidth,
-                height: totalRowHeight + 20
+                position: 'relative',
+                width: totalContentWidth,
+                height: totalRowHeight,
+                minWidth: totalContentWidth,
               }}
-            />
+            >
+              {renderedBars}
+            </div>
           )}
         </div>
       </div>
@@ -193,17 +248,19 @@ const FootprintTable: React.FC<FootprintTableProps> = ({ bars, activeBar, global
             <div className="w-2 h-2 border border-yellow-400 mr-1"></div> Imbalance
           </span>
           <span>Stacked: <span className="text-kr-red">Buy</span> / <span className="text-kr-blue">Sell</span></span>
-          <span className="ml-4 text-gray-600">| Bars: {allBars.length} (Virtualized)</span>
+          <span className="ml-4 text-gray-600">| Bars: {totalBars} | Visible: {visibleRange.endIdx - visibleRange.startIdx}</span>
         </div>
       </div>
     </div>
   );
 };
 
-const StatLabelRow: React.FC<{ label: string }> = ({ label }) => (
+const StatLabelRow: React.FC<{ label: string }> = React.memo(({ label }) => (
   <div className="flex items-center justify-end pr-2 text-[9px] text-white font-bold font-mono border-b border-gray-800 last:border-b-0" style={{ height: ROW_HEIGHT }}>
     {label}
   </div>
-);
+));
+
+StatLabelRow.displayName = 'StatLabelRow';
 
 export default FootprintTable;

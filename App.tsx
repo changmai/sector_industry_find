@@ -355,57 +355,104 @@ const App: React.FC = () => {
     }
   }, [rotationMode, thresholds, priceGrouping]);
 
-  // --- Derived Stats for Header ---
-  const headerStats: FootprintStats = useMemo(() => {
-     if (ticks.length === 0) return { totalVolume: 0, cvd: 0, high: 0, low: 0, open: 0, close: 0 };
-     const totalVol = ticks.reduce((acc, t) => acc + t.volume, 0);
-     const buyVol = ticks.filter(t => t.side === Side.Buy).reduce((acc, t) => acc + t.volume, 0);
-     const sellVol = ticks.filter(t => t.side === Side.Sell).reduce((acc, t) => acc + t.volume, 0);
-     
+  // --- Derived Stats for Header (optimized: split into two memos) ---
+  // Tick-based stats: only recalculates when ticks array changes
+  const tickBasedStats = useMemo(() => {
+     if (ticks.length === 0) return { totalVolume: 0, cvd: 0, high: 0, low: 0, open: 0 };
+
+     // Single pass through ticks array
+     let totalVol = 0;
+     let buyVol = 0;
+     let high = ticks[0].price;
+     let low = ticks[0].price;
+
+     for (const t of ticks) {
+       totalVol += t.volume;
+       if (t.side === Side.Buy) buyVol += t.volume;
+       if (t.price > high) high = t.price;
+       if (t.price < low) low = t.price;
+     }
+
      return {
          totalVolume: totalVol,
-         cvd: buyVol - sellVol,
-         high: Math.max(...ticks.map(t => t.price)),
-         low: Math.min(...ticks.map(t => t.price)),
-         open: ticks[ticks.length - 1].price, 
-         close: currentPrice
+         cvd: buyVol - (totalVol - buyVol), // buyVol - sellVol
+         high,
+         low,
+         open: ticks[ticks.length - 1].price,
      };
-  }, [ticks, currentPrice]);
+  }, [ticks]);
 
-  // --- Calculate Global Y-Axis Range ---
+  // Final header stats: combines tick stats with current price (minimal computation)
+  const headerStats: FootprintStats = useMemo(() => ({
+    ...tickBasedStats,
+    close: currentPrice
+  }), [tickBasedStats, currentPrice]);
+
+  // --- Calculate Global Y-Axis Range (Optimized: single pass, no temp arrays) ---
+  // Cache history bars range separately to avoid recalculation on active bar updates
+  const historyRange = useMemo(() => {
+    if (historyBars.length === 0) {
+      return { high: -Infinity, low: Infinity };
+    }
+
+    let high = historyBars[0].high;
+    let low = historyBars[0].low;
+
+    for (let i = 1; i < historyBars.length; i++) {
+      const bar = historyBars[i];
+      if (bar.high > high) high = bar.high;
+      if (bar.low < low) low = bar.low;
+    }
+
+    return { high, low };
+  }, [historyBars]);
+
   const { globalHigh, globalLow } = useMemo(() => {
-    let highs: number[] = [];
-    let lows: number[] = [];
+    let max = historyRange.high;
+    let min = historyRange.low;
 
-    if (historyBars.length > 0) {
-        highs.push(...historyBars.map(b => b.high));
-        lows.push(...historyBars.map(b => b.low));
-    }
-    
+    // Include active bar if it has data
     if (activeBarStats.totalVolume > 0) {
-        highs.push(activeBarStats.high);
-        lows.push(activeBarStats.low);
+      if (activeBarStats.high > max) max = activeBarStats.high;
+      if (activeBarStats.low < min) min = activeBarStats.low;
     }
 
-    if (highs.length === 0) {
-        return { globalHigh: CONFIG.INITIAL_PRICE + CONFIG.PRICE_STEP * 5, globalLow: CONFIG.INITIAL_PRICE - CONFIG.PRICE_STEP * 5 };
+    // Fallback if no data
+    if (max === -Infinity || min === Infinity) {
+      return {
+        globalHigh: CONFIG.INITIAL_PRICE + CONFIG.PRICE_STEP * 5,
+        globalLow: CONFIG.INITIAL_PRICE - CONFIG.PRICE_STEP * 5
+      };
     }
-
-    const max = Math.max(...highs);
-    const min = Math.min(...lows);
 
     return {
-        globalHigh: max + (CONFIG.PRICE_STEP * 2),
-        globalLow: min - (CONFIG.PRICE_STEP * 2)
+      globalHigh: max + (CONFIG.PRICE_STEP * 2),
+      globalLow: min - (CONFIG.PRICE_STEP * 2)
     };
-  }, [historyBars, activeBarStats.high, activeBarStats.low]);
+  }, [historyRange, activeBarStats.high, activeBarStats.low, activeBarStats.totalVolume]);
 
+
+  // --- Refs for stable access in processTick (avoid callback recreation) ---
+  const rotationModeRef = useRef(rotationMode);
+  const thresholdsRef = useRef(thresholds);
+  const priceGroupingRef = useRef(priceGrouping);
+
+  // Keep refs in sync
+  useEffect(() => {
+    rotationModeRef.current = rotationMode;
+    thresholdsRef.current = thresholds;
+    priceGroupingRef.current = priceGrouping;
+  }, [rotationMode, thresholds, priceGrouping]);
 
   // --- Tick Processing Function (used by both interval and WebSocket) ---
+  // Optimized: Uses refs to avoid recreation on settings change
   const processTick = useCallback((newTick: Tick) => {
     const now = Date.now();
     const nowStr = new Date(now).toTimeString().split(' ')[0];
-    const groupedPrice = groupPriceLevel(newTick.price, priceGrouping);
+    const currentPriceGrouping = priceGroupingRef.current;
+    const currentRotationMode = rotationModeRef.current;
+    const currentThresholds = thresholdsRef.current;
+    const groupedPrice = groupPriceLevel(newTick.price, currentPriceGrouping);
 
     setCurrentPrice(newTick.price);
 
@@ -433,16 +480,16 @@ const App: React.FC = () => {
       // --- ROTATION LOGIC ---
       let shouldRotate = false;
 
-      if (rotationMode === 'VOLUME') {
-          if (potentialTotalVol >= thresholds.VOLUME) shouldRotate = true;
+      if (currentRotationMode === 'VOLUME') {
+          if (potentialTotalVol >= currentThresholds.VOLUME) shouldRotate = true;
       }
-      else if (rotationMode === 'TIME') {
+      else if (currentRotationMode === 'TIME') {
           const elapsedSec = (now - prev.timestamp) / 1000;
-          if (elapsedSec >= thresholds.TIME) shouldRotate = true;
+          if (elapsedSec >= currentThresholds.TIME) shouldRotate = true;
       }
-      else if (rotationMode === 'RANGE') {
-          const rangeTicks = (potentialHigh - potentialLow) / priceGrouping;
-          if (rangeTicks >= thresholds.RANGE) shouldRotate = true;
+      else if (currentRotationMode === 'RANGE') {
+          const rangeTicks = (potentialHigh - potentialLow) / currentPriceGrouping;
+          if (rangeTicks >= currentThresholds.RANGE) shouldRotate = true;
       }
 
       if (shouldRotate) {
@@ -549,12 +596,17 @@ const App: React.FC = () => {
           minDelta: potentialMinDelta
       };
     });
-  }, [rotationMode, thresholds, priceGrouping]); // Dependencies: recreate when rotation settings or price grouping change
+  }, []); // Optimized: No dependencies - uses refs for settings access
 
   // --- WebSocket Connection (separate from tick processing) ---
   // filterCode를 ref로 관리하여 재연결 없이 필터만 변경
   const filterCodeRef = useRef(targetCode);
   const processTickRef = useRef(processTick);
+
+  // Throttle: 틱을 버퍼에 모았다가 일정 간격으로 처리
+  const tickBufferRef = useRef<Tick[]>([]);
+  const throttleIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const THROTTLE_MS = 50; // 50ms마다 렌더링 (초당 20회)
 
   // processTick ref 업데이트 (재연결 없이)
   useEffect(() => {
@@ -565,16 +617,39 @@ const App: React.FC = () => {
     filterCodeRef.current = targetCode;
   }, [targetCode]);
 
+  // Throttled tick processing - 버퍼의 모든 틱을 한 번에 처리
+  useEffect(() => {
+    throttleIntervalRef.current = setInterval(() => {
+      const buffer = tickBufferRef.current;
+      if (buffer.length === 0) return;
+
+      // 버퍼의 모든 틱을 순서대로 처리
+      for (const tick of buffer) {
+        processTickRef.current(tick);
+      }
+
+      // 버퍼 비우기
+      tickBufferRef.current = [];
+    }, THROTTLE_MS);
+
+    return () => {
+      if (throttleIntervalRef.current) {
+        clearInterval(throttleIntervalRef.current);
+      }
+    };
+  }, []);
+
   useEffect(() => {
     if (dataSource === 'websocket') {
       const ws = connectWebSocket(
         (tick: any) => {
           // 종목코드로 필터링 (Backend가 모든 종목 데이터를 브로드캐스트하므로)
           if (tick.code && tick.code === filterCodeRef.current) {
-            processTickRef.current(tick);
+            // Throttle: 바로 처리하지 않고 버퍼에 추가
+            tickBufferRef.current.push(tick);
           } else if (!tick.code) {
-            // code 필드가 없으면 그냥 처리 (Legacy 호환)
-            processTickRef.current(tick);
+            // code 필드가 없으면 그냥 버퍼에 추가 (Legacy 호환)
+            tickBufferRef.current.push(tick);
           }
         },
         (error) => {
@@ -645,13 +720,14 @@ const App: React.FC = () => {
   }, [activeBarStats, currentPrice]);
 
   // --- CVD (Cumulative Volume Delta) Data Transformation ---
-  // Converts historyBars + activeBarStats into CVD candle format
-  // CVD is cumulative: each bar's Open = previous bar's Close
-  const cvdData: CVDCandle[] = useMemo(() => {
+  // Optimized: Cache history CVD and only recalculate when historyBars changes
+  // Active bar CVD is computed separately to avoid full recalculation on every tick
+
+  // Cache for history bars CVD (only recalculates when historyBars changes)
+  const historyCvdData = useMemo(() => {
     const result: CVDCandle[] = [];
     let cumulativeDelta = 0;
 
-    // Process completed history bars
     for (let i = 0; i < historyBars.length; i++) {
       const bar = historyBars[i];
       const cvdOpen = cumulativeDelta;
@@ -670,24 +746,34 @@ const App: React.FC = () => {
       cumulativeDelta = cvdClose;
     }
 
-    // Add active bar (real-time)
-    if (activeBarStats.totalVolume > 0) {
-      const cvdOpen = cumulativeDelta;
-      const cvdClose = cvdOpen + activeBarStats.currentDelta;
-      const cvdHigh = cvdOpen + activeBarStats.maxDelta;
-      const cvdLow = cvdOpen + activeBarStats.minDelta;
+    return { data: result, lastCumulativeDelta: cumulativeDelta };
+  }, [historyBars]);
 
-      result.push({
-        time: historyBars.length,
-        open: cvdOpen,
-        high: Math.max(cvdHigh, cvdOpen, cvdClose),
-        low: Math.min(cvdLow, cvdOpen, cvdClose),
-        close: cvdClose,
-      });
+  // Final CVD data: history + active bar (only active bar recalculates on tick)
+  const cvdData: CVDCandle[] = useMemo(() => {
+    const { data: historyData, lastCumulativeDelta } = historyCvdData;
+
+    if (activeBarStats.totalVolume === 0) {
+      return historyData;
     }
 
-    return result;
-  }, [historyBars, activeBarStats.currentDelta, activeBarStats.maxDelta, activeBarStats.minDelta, activeBarStats.totalVolume]); 
+    // Only compute active bar CVD
+    const cvdOpen = lastCumulativeDelta;
+    const cvdClose = cvdOpen + activeBarStats.currentDelta;
+    const cvdHigh = cvdOpen + activeBarStats.maxDelta;
+    const cvdLow = cvdOpen + activeBarStats.minDelta;
+
+    const activeBarCvd: CVDCandle = {
+      time: historyBars.length,
+      open: cvdOpen,
+      high: Math.max(cvdHigh, cvdOpen, cvdClose),
+      low: Math.min(cvdLow, cvdOpen, cvdClose),
+      close: cvdClose,
+    };
+
+    // Return new array with active bar appended (shallow copy of history)
+    return [...historyData, activeBarCvd];
+  }, [historyCvdData, historyBars.length, activeBarStats.currentDelta, activeBarStats.maxDelta, activeBarStats.minDelta, activeBarStats.totalVolume]); 
 
   const handleThresholdChange = (e: React.ChangeEvent<HTMLInputElement>) => {
       setTempInput(e.target.value);

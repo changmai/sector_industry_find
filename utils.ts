@@ -3,19 +3,25 @@ import { CONFIG } from './constants';
 
 /**
  * Raw Map data를 받아 분석 지표(Imbalance, POC, Stacked 등)가 포함된 배열로 변환
+ * Optimized: Single pass for most operations, in-place mutation where possible
  */
 export const calculateFootprintIndicators = (
   priceMap: Map<number, PriceLevelData>
 ): PriceLevelData[] => {
-  const rawData: PriceLevelData[] = Array.from(priceMap.values());
-  if (rawData.length === 0) return [];
+  const size = priceMap.size;
+  if (size === 0) return [];
 
-  // 1. Find POC (Max Volume)
-  const maxVol = Math.max(...rawData.map((d) => d.totalVolume));
+  const priceStep = 100;
+  const imbalanceRatio = CONFIG.IMBALANCE_RATIO;
 
-  // 2. First Pass: Calculate Basic Diagonal Imbalances
-  let processed = rawData.map((item) => {
-    const priceStep = 100;
+  // Pre-allocate result array and find maxVol in single pass
+  const processed: PriceLevelData[] = new Array(size);
+  let maxVol = 0;
+  let idx = 0;
+
+  // Single iteration: copy to array + find max volume + calculate imbalances
+  for (const item of priceMap.values()) {
+    if (item.totalVolume > maxVol) maxVol = item.totalVolume;
 
     const bidAtP = item.sellVolume;
     const askAtP = item.buyVolume;
@@ -23,68 +29,68 @@ export const calculateFootprintIndicators = (
     // Check for Sell Imbalance (Bid P vs Ask P+1)
     const levelAbove = priceMap.get(item.price + priceStep);
     const askAbove = levelAbove ? levelAbove.buyVolume : 0;
-    const isSellImbalance =
-      askAbove > 0 && bidAtP >= askAbove * CONFIG.IMBALANCE_RATIO;
+    const isSellImbalance = askAbove > 0 && bidAtP >= askAbove * imbalanceRatio;
 
     // Check for Buy Imbalance (Ask P vs Bid P-1)
     const levelBelow = priceMap.get(item.price - priceStep);
     const bidBelow = levelBelow ? levelBelow.sellVolume : 0;
-    const isBuyImbalance =
-      bidBelow > 0 && askAtP >= bidBelow * CONFIG.IMBALANCE_RATIO;
+    const isBuyImbalance = bidBelow > 0 && askAtP >= bidBelow * imbalanceRatio;
 
-    return {
-      ...item,
-      isPOC: item.totalVolume === maxVol,
+    // Create new object with calculated flags
+    processed[idx++] = {
+      price: item.price,
+      buyVolume: item.buyVolume,
+      sellVolume: item.sellVolume,
+      totalVolume: item.totalVolume,
+      delta: item.delta,
+      isPOC: false, // Will set after loop
       imbalanceBuy: isBuyImbalance,
       imbalanceSell: isSellImbalance,
-      // Reset advanced flags for second pass
       stackedImbalanceBuy: false,
       stackedImbalanceSell: false,
       isUnfinished: false,
     };
-  });
+  }
 
-  // Sort by price descending (High to Low)
+  // Set POC flag (second mini-pass, but O(n) with simple comparison)
+  for (let i = 0; i < size; i++) {
+    if (processed[i].totalVolume === maxVol) {
+      processed[i].isPOC = true;
+      break; // Only one POC needed
+    }
+  }
+
+  // Sort by price descending (High to Low) - O(n log n), unavoidable
   processed.sort((a, b) => b.price - a.price);
 
-  // 3. Second Pass: Stacked Imbalances & Unfinished Business
-  for (let i = 0; i < processed.length; i++) {
+  // Stacked Imbalances & Unfinished Business (single pass)
+  const lastIdx = size - 1;
+
+  for (let i = 0; i < size; i++) {
+    const current = processed[i];
+
     // --- Stacked Imbalance Logic (3+ consecutive) ---
-    if (i <= processed.length - 3) {
+    if (i <= lastIdx - 2) {
+      const next1 = processed[i + 1];
+      const next2 = processed[i + 2];
+
       // Check Buy Stack
-      if (
-        processed[i].imbalanceBuy &&
-        processed[i + 1].imbalanceBuy &&
-        processed[i + 2].imbalanceBuy
-      ) {
-        processed[i].stackedImbalanceBuy = true;
-        processed[i + 1].stackedImbalanceBuy = true;
-        processed[i + 2].stackedImbalanceBuy = true;
+      if (current.imbalanceBuy && next1.imbalanceBuy && next2.imbalanceBuy) {
+        current.stackedImbalanceBuy = true;
+        next1.stackedImbalanceBuy = true;
+        next2.stackedImbalanceBuy = true;
       }
       // Check Sell Stack
-      if (
-        processed[i].imbalanceSell &&
-        processed[i + 1].imbalanceSell &&
-        processed[i + 2].imbalanceSell
-      ) {
-        processed[i].stackedImbalanceSell = true;
-        processed[i + 1].stackedImbalanceSell = true;
-        processed[i + 2].stackedImbalanceSell = true;
+      if (current.imbalanceSell && next1.imbalanceSell && next2.imbalanceSell) {
+        current.stackedImbalanceSell = true;
+        next1.stackedImbalanceSell = true;
+        next2.stackedImbalanceSell = true;
       }
     }
 
     // --- Unfinished Business Logic (High/Low) ---
-    // Check High (Index 0)
-    if (i === 0) {
-      if (processed[i].buyVolume > 0 && processed[i].sellVolume > 0) {
-        processed[i].isUnfinished = true;
-      }
-    }
-    // Check Low (Last Index)
-    if (i === processed.length - 1) {
-      if (processed[i].buyVolume > 0 && processed[i].sellVolume > 0) {
-        processed[i].isUnfinished = true;
-      }
+    if ((i === 0 || i === lastIdx) && current.buyVolume > 0 && current.sellVolume > 0) {
+      current.isUnfinished = true;
     }
   }
 

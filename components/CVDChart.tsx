@@ -126,11 +126,22 @@ const CVDChart = forwardRef<CVDChartHandle, CVDChartProps>(({ data, height = 150
     };
   }, [height]);
 
-  // Update data when it changes
+  // Track previous data length for incremental updates
+  const prevDataLengthRef = useRef(0);
+
+  // Update data when it changes - use incremental update when possible
   useEffect(() => {
     if (!isReady || !seriesRef.current) return;
 
-    if (data.length > 0) {
+    if (data.length === 0) {
+      prevDataLengthRef.current = 0;
+      return;
+    }
+
+    const prevLength = prevDataLengthRef.current;
+
+    // If data was reset or significantly changed, do full setData
+    if (prevLength === 0 || data.length < prevLength) {
       const chartData: CandlestickData<Time>[] = data.map((candle) => ({
         time: candle.time as Time,
         open: candle.open,
@@ -138,12 +149,26 @@ const CVDChart = forwardRef<CVDChartHandle, CVDChartProps>(({ data, height = 150
         low: candle.low,
         close: candle.close,
       }));
-
       seriesRef.current.setData(chartData);
-
-      if (chartRef.current) {
-        chartRef.current.timeScale().scrollToRealTime();
+    } else {
+      // Incremental update: only update changed/new candles
+      // Update the last candle (active bar) and add any new ones
+      for (let i = Math.max(0, prevLength - 1); i < data.length; i++) {
+        const candle = data[i];
+        seriesRef.current.update({
+          time: candle.time as Time,
+          open: candle.open,
+          high: candle.high,
+          low: candle.low,
+          close: candle.close,
+        });
       }
+    }
+
+    prevDataLengthRef.current = data.length;
+
+    if (chartRef.current) {
+      chartRef.current.timeScale().scrollToRealTime();
     }
   }, [data, isReady]);
 

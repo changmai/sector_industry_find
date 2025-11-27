@@ -51,6 +51,25 @@
       ::-webkit-scrollbar-thumb:hover {
         background: #666;
       }
+
+      /* Performance Optimization: content-visibility */
+      .footprint-bar {
+        content-visibility: auto;
+        contain-intrinsic-size: 130px 500px; /* Approximate size hint */
+        contain: layout style paint;
+      }
+
+      .tick-row {
+        content-visibility: auto;
+        contain-intrinsic-size: 100% 20px;
+        contain: layout style paint;
+      }
+
+      /* GPU acceleration for smooth scrolling */
+      .gpu-accelerated {
+        will-change: transform;
+        transform: translateZ(0);
+      }
     </style>
   <script type="importmap">
 {
