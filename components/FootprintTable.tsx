@@ -32,6 +32,10 @@ const FootprintTable: React.FC<FootprintTableProps> = ({ bars, activeBar, global
   // Container dimensions
   const [containerWidth, setContainerWidth] = useState(800);
   const [scrollLeft, setScrollLeft] = useState(0);
+  const [scrollTop, setScrollTop] = useState(0);
+
+  // Ref for Stats Label Column scroll sync
+  const statsColumnRef = useRef<HTMLDivElement>(null);
 
   // Generate Master Price List - stabilized to prevent unnecessary re-renders
   const priceRowsRef = useRef<number[]>([]);
@@ -79,12 +83,18 @@ const FootprintTable: React.FC<FootprintTableProps> = ({ bars, activeBar, global
     return { startIdx, endIdx };
   }, [scrollLeft, containerWidth, totalBars]);
 
-  // Handle scroll
+  // Handle scroll (both X and Y axis)
   const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
     const target = e.currentTarget;
     setScrollLeft(target.scrollLeft);
+    setScrollTop(target.scrollTop);
 
-    // Auto-scroll detection
+    // Sync Stats Label Column Y scroll
+    if (statsColumnRef.current) {
+      statsColumnRef.current.scrollTop = target.scrollTop;
+    }
+
+    // Auto-scroll detection (X-axis)
     const { scrollWidth, clientWidth } = target;
     isAutoScrollEnabled.current = scrollWidth - clientWidth - target.scrollLeft < 100;
   }, []);
@@ -188,35 +198,40 @@ const FootprintTable: React.FC<FootprintTableProps> = ({ bars, activeBar, global
       ref={containerRef}
       className="flex flex-col h-full bg-panel-bg rounded-lg border border-border-color shadow-xl relative overflow-hidden"
     >
-      <div className="flex-1 flex overflow-hidden">
-        {/* Sticky Stats Label Column */}
-        <div className="z-30 bg-panel-bg border-r border-border-color flex flex-col shrink-0 w-[70px] shadow-md">
-          {/* Header Placeholder */}
+      <div className="flex-1 flex overflow-hidden min-h-0">
+        {/* Sticky Stats Label Column - synced with main scroll Y */}
+        <div className="z-30 bg-panel-bg border-r border-border-color flex flex-col shrink-0 w-[70px] shadow-md overflow-hidden">
+          {/* Header Placeholder - fixed at top */}
           <div
-            className="border-b border-gray-800 flex items-center justify-center text-[9px] text-gray-500 font-mono bg-panel-bg"
+            className="border-b border-gray-800 flex items-center justify-center text-[9px] text-gray-500 font-mono bg-panel-bg shrink-0"
             style={{ height: HEADER_HEIGHT }}
           >
             Stats
           </div>
 
-          {/* Body Spacer */}
-          <div style={{ height: chartBodyHeight, minHeight: chartBodyHeight }}></div>
-
-          {/* Stats Labels - Sticky Bottom */}
-          <div className="mt-auto border-t border-gray-700 bg-panel-bg z-40 shadow-[0_-1px_2px_rgba(0,0,0,0.3)]">
-            <StatLabelRow label="Delta" />
-            <StatLabelRow label="Max Delta" />
-            <StatLabelRow label="Min Delta" />
-            <StatLabelRow label="Volume" />
+          {/* Scrollable body area (synced with main container) */}
+          <div
+            ref={statsColumnRef}
+            className="flex-1 overflow-hidden"
+            style={{ minHeight: 0 }}
+          >
+            <div style={{ height: chartBodyHeight, minHeight: chartBodyHeight }}></div>
+            {/* Stats Labels at bottom of scrollable content */}
+            <div className="border-t border-gray-700 bg-panel-bg">
+              <StatLabelRow label="Delta" />
+              <StatLabelRow label="Max Delta" />
+              <StatLabelRow label="Min Delta" />
+              <StatLabelRow label="Volume" />
+            </div>
           </div>
         </div>
 
         {/* Direct Virtualized Scroll Container */}
         <div
           ref={scrollContainerRef}
-          className="flex-1 overflow-x-auto overflow-y-auto custom-scrollbar gpu-accelerated"
+          className="flex-1 overflow-auto custom-scrollbar gpu-accelerated"
           onScroll={handleScroll}
-          style={{ height: totalRowHeight + 20 }}
+          style={{ minHeight: 0 }}
         >
           {totalBars === 0 ? (
             <div className="h-full flex items-center justify-center text-gray-600">
@@ -229,6 +244,7 @@ const FootprintTable: React.FC<FootprintTableProps> = ({ bars, activeBar, global
                 width: totalContentWidth,
                 height: totalRowHeight,
                 minWidth: totalContentWidth,
+                minHeight: totalRowHeight,
               }}
             >
               {renderedBars}
