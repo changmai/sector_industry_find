@@ -25,6 +25,10 @@ export interface PriceLevelData {
   stackedImbalanceSell: boolean; // 3+ consecutive sell imbalances (Resistance Zone)
   isPOC: boolean;      // Point of Control (Max Volume)
   isUnfinished: boolean; // Unfinished Business at High/Low
+  isVA: boolean;       // Value Area (70% of volume)
+  isVAH: boolean;      // Value Area High
+  isVAL: boolean;      // Value Area Low
+  isLVN: boolean;      // Low Volume Node
 }
 
 export interface FootprintStats {

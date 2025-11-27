@@ -257,7 +257,11 @@ const App: React.FC = () => {
         stackedImbalanceBuy: false,
         stackedImbalanceSell: false,
         isPOC: false,
-        isUnfinished: false
+        isUnfinished: false,
+        isVA: false,
+        isVAH: false,
+        isVAL: false,
+        isLVN: false
       };
 
       if (tick.side === Side.Buy) level.buyVolume += tick.volume;
@@ -506,7 +510,11 @@ const App: React.FC = () => {
                stackedImbalanceBuy: false,
                stackedImbalanceSell: false,
                isPOC: false,
-               isUnfinished: false
+               isUnfinished: false,
+               isVA: false,
+               isVAH: false,
+               isVAL: false,
+               isLVN: false
            };
 
            if (newTick.side === Side.Buy) level.buyVolume += newTick.volume;
@@ -570,7 +578,11 @@ const App: React.FC = () => {
           stackedImbalanceBuy: false,
           stackedImbalanceSell: false,
           isPOC: false,
-          isUnfinished: false
+          isUnfinished: false,
+          isVA: false,
+          isVAH: false,
+          isVAL: false,
+          isLVN: false
       };
 
       if (newTick.side === Side.Buy) level.buyVolume += newTick.volume;

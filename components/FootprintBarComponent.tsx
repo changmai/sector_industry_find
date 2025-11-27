@@ -26,15 +26,17 @@ const FootprintBarComponent: React.FC<FootprintBarProps> = React.memo(({ candle,
   }, [priceRows]);
 
   // Max Volume for Heatmap & Profile within this specific bar
-  const { maxTotalVolume, maxCellVolume } = useMemo(() => {
+  const { maxTotalVolume, maxCellVolume, maxAbsDelta } = useMemo(() => {
     let maxTotal = 0;
     let maxCell = 0;
+    let maxAbsD = 0;
     candle.priceLevels.forEach(d => {
       if (d.totalVolume > maxTotal) maxTotal = d.totalVolume;
       if (d.buyVolume > maxCell) maxCell = d.buyVolume;
       if (d.sellVolume > maxCell) maxCell = d.sellVolume;
+      if (Math.abs(d.delta) > maxAbsD) maxAbsD = Math.abs(d.delta);
     });
-    return { maxTotalVolume: maxTotal || 1, maxCellVolume: maxCell || 1 };
+    return { maxTotalVolume: maxTotal || 1, maxCellVolume: maxCell || 1, maxAbsDelta: maxAbsD || 1 };
   }, [candle]);
 
   // --- OHLC Strip Calculations ---
@@ -151,6 +153,7 @@ const FootprintBarComponent: React.FC<FootprintBarProps> = React.memo(({ candle,
                             row={levelData}
                             maxTotalVolume={maxTotalVolume}
                             maxCellVolume={maxCellVolume}
+                            maxAbsDelta={maxAbsDelta}
                             isHigh={levelData.price === candle.high}
                             isLow={levelData.price === candle.low}
                             isCurrent={isActive && levelData.price === candle.close}
@@ -180,14 +183,15 @@ const StatRow: React.FC<{ label: string, value: number, style: React.CSSProperti
     </div>
 );
 
-// Custom Grid System: 3fr (Bid) | 4fr (Price) | 3fr (Ask)
+// Custom Grid System: 2.5fr (Bid) | 3fr (Price) | 2fr (Delta) | 2.5fr (Ask)
 const EmptyRow: React.FC<{ price: number }> = React.memo(({ price }) => (
-    <div 
-        className="grid grid-cols-[3fr_4fr_3fr] gap-px text-[9px] font-mono border-b border-gray-800/10 opacity-20"
+    <div
+        className="grid grid-cols-[2.5fr_3fr_2fr_2.5fr] gap-px text-[9px] font-mono border-b border-gray-800/10 opacity-20"
         style={{ height: ROW_HEIGHT }}
     >
         <div></div>
         <div className="text-center text-gray-700 flex items-center justify-center tracking-tighter scale-75">{price}</div>
+        <div></div>
         <div></div>
     </div>
 ));
@@ -196,55 +200,61 @@ interface RowProps {
     row: PriceLevelData;
     maxTotalVolume: number;
     maxCellVolume: number;
+    maxAbsDelta: number;
     isHigh: boolean;
     isLow: boolean;
     isCurrent: boolean;
 }
 
-const Row: React.FC<RowProps> = React.memo(({ row, maxTotalVolume, maxCellVolume, isHigh, isLow, isCurrent }) => {
+const Row: React.FC<RowProps> = React.memo(({ row, maxTotalVolume, maxCellVolume, maxAbsDelta, isHigh, isLow, isCurrent }) => {
   const profileWidth = (row.totalVolume / maxTotalVolume) * 100;
+  const deltaWidth = (Math.abs(row.delta) / maxAbsDelta) * 100;
 
   const getOpacity = (vol: number) => {
       if (vol === 0) return 0;
       const ratio = vol / maxCellVolume;
-      return Math.min(0.85, Math.max(0.1, Math.sqrt(ratio))); 
+      return Math.min(0.85, Math.max(0.1, Math.sqrt(ratio)));
   };
 
   const sellOpacity = getOpacity(row.sellVolume);
   const buyOpacity = getOpacity(row.buyVolume);
 
   return (
-    <div 
-        className={`grid grid-cols-[3fr_4fr_3fr] gap-px text-[9px] font-mono leading-tight relative border-b border-gray-800/30 items-center ${isCurrent ? 'bg-gray-700/30' : ''}`}
+    <div
+        className={`grid grid-cols-[2.5fr_3fr_2fr_2.5fr] gap-px text-[9px] font-mono leading-tight relative border-b border-gray-800/30 items-center ${isCurrent ? 'bg-gray-700/30' : ''} ${row.isLVN ? COLORS.LVN_BG : ''}`}
         style={{ height: ROW_HEIGHT }}
     >
-      
-      {/* Bid (Sell Side) - Wider (30%) */}
-      <div 
+
+      {/* Bid (Sell Side) */}
+      <div
         className={`px-0.5 h-full text-right flex items-center justify-end text-gray-200 relative overflow-hidden
-            ${row.imbalanceSell ? 'border border-yellow-400 font-bold' : ''}
+            ${row.imbalanceSell ? `border ${COLORS.IMBALANCE_BORDER} font-bold` : ''}
         `}
         style={{ backgroundColor: `rgba(77, 148, 255, ${sellOpacity})` }}
       >
         {row.stackedImbalanceSell && <div className="absolute inset-y-0 right-0 w-0.5 bg-kr-blue z-20"></div>}
-        {/* Scale increased to 90 for visibility */}
         <span className="relative z-10 scale-90 origin-right">{row.sellVolume > 0 ? row.sellVolume : ''}</span>
       </div>
 
-      {/* Price & Profile - Narrower (40%) */}
+      {/* Price & Profile */}
       <div className={`h-full flex items-center justify-center font-medium text-gray-400 relative border-x border-gray-800/30 overflow-hidden
         ${isCurrent ? 'text-white font-bold bg-gray-600' : ''}
       `}>
-        {/* Volume Profile Overlay */}
-        <div 
-            className={`absolute top-0 bottom-0 left-0 opacity-30 pointer-events-none z-0 ${row.delta > 0 ? 'bg-kr-red' : 'bg-kr-blue'}`}
+        {/* VA Indicator - Left vertical line */}
+        {row.isVA && (
+          <div className={`absolute left-0 top-0 bottom-0 w-[2px] ${row.isVAH || row.isVAL ? COLORS.VAH_VAL_LINE : COLORS.VA_LINE} opacity-60 z-20`}></div>
+        )}
+
+        {/* Volume Profile Overlay - Gray color */}
+        <div
+            className="absolute top-0 bottom-0 left-0 opacity-30 pointer-events-none z-0 bg-gray-500"
             style={{ width: `${profileWidth}%` }}
         ></div>
 
         {row.isPOC && (
             <div className={`absolute inset-0 border ${COLORS.POC_BORDER} pointer-events-none z-10`}></div>
         )}
-        
+
         {row.isUnfinished && (isHigh || isLow) && (
              <Magnet className="w-2.5 h-2.5 text-highlight absolute left-0 ml-0.5 opacity-90 z-20" />
         )}
@@ -252,19 +262,33 @@ const Row: React.FC<RowProps> = React.memo(({ row, maxTotalVolume, maxCellVolume
              <Ban className="w-2.5 h-2.5 text-gray-600 absolute left-0 ml-0.5 opacity-90 z-20" />
         )}
 
-        {/* Price Text Scaled Down to fit narrower column */}
+        {/* LVN indicator - dashed line */}
+        {row.isLVN && (
+          <div className="absolute inset-x-0 top-1/2 border-t border-dashed border-amber-500/50 z-10"></div>
+        )}
+
         <span className="relative z-10 tracking-tighter scale-75">{row.price.toLocaleString()}</span>
       </div>
 
-      {/* Ask (Buy Side) - Wider (30%) */}
-      <div 
+      {/* Delta Bar Column */}
+      <div className="h-full relative overflow-hidden flex items-center justify-center border-x border-gray-800/30">
+        <div
+          className={`absolute top-0 bottom-0 left-0 ${row.delta > 0 ? 'bg-kr-red' : 'bg-kr-blue'} opacity-40`}
+          style={{ width: `${deltaWidth}%` }}
+        />
+        <span className={`relative z-10 scale-90 ${row.delta > 0 ? 'text-kr-red' : row.delta < 0 ? 'text-kr-blue' : 'text-gray-500'}`}>
+          {row.delta !== 0 ? (row.delta > 0 ? '+' : '') + row.delta : ''}
+        </span>
+      </div>
+
+      {/* Ask (Buy Side) */}
+      <div
         className={`px-0.5 h-full text-left flex items-center justify-start text-gray-200 relative overflow-hidden
-            ${row.imbalanceBuy ? 'border border-yellow-400 font-bold' : ''}
+            ${row.imbalanceBuy ? `border ${COLORS.IMBALANCE_BORDER} font-bold` : ''}
         `}
         style={{ backgroundColor: `rgba(255, 77, 77, ${buyOpacity})` }}
       >
         {row.stackedImbalanceBuy && <div className="absolute inset-y-0 left-0 w-0.5 bg-kr-red z-20"></div>}
-        {/* Scale increased to 90 for visibility */}
         <span className="relative z-10 scale-90 origin-left">{row.buyVolume > 0 ? row.buyVolume : ''}</span>
       </div>
     </div>

@@ -10,6 +10,10 @@ export const COLORS = {
   POC_BORDER: 'border-highlight',
   POC_TEXT: 'text-highlight',
   NEUTRAL: 'text-gray-400',
+  IMBALANCE_BORDER: 'border-orange-400',
+  VA_LINE: 'bg-gray-400',
+  VAH_VAL_LINE: 'bg-white',
+  LVN_BG: 'bg-amber-900/20',
 };
 
 export const ROW_HEIGHT = 22; // px height for a single price row
