@@ -51,3 +51,12 @@ export interface FootprintCandle {
   minDelta: number;
   priceLevels: PriceLevelData[]; // Processed array, sorted descending
 }
+
+// CVD (Cumulative Volume Delta) Candle for visualization
+export interface CVDCandle {
+  time: number;    // Bar index (0, 1, 2, ...) for lightweight-charts
+  open: number;    // Previous CVD Close (0 for first bar)
+  high: number;    // CVD_Open + maxDelta
+  low: number;     // CVD_Open + minDelta
+  close: number;   // CVD_Open + delta
+}

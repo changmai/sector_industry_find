@@ -4,10 +4,11 @@ import Header from './components/Header';
 import FootprintTable from './components/FootprintTable';
 import TickList from './components/TickList';
 import StockCodeChangeDialog from './components/StockCodeChangeDialog';
+import CVDChart from './components/CVDChart';
 import { generateTick } from './services/mockDataService';
 import { loadRawData } from './services/rawDataService';
 import { connectWebSocket, changeTargetCode, fetchHistoricalData } from './services/websocketDataService';
-import { Tick, PriceLevelData, FootprintStats, Side, FootprintCandle } from './types';
+import { Tick, PriceLevelData, FootprintStats, Side, FootprintCandle, CVDCandle } from './types';
 import { CONFIG } from './constants';
 import { calculateFootprintIndicators } from './utils';
 import { groupPriceLevel, PRICE_GROUPING_OPTIONS, PriceGroupingOption } from './utils/priceGrouping';
@@ -641,7 +642,52 @@ const App: React.FC = () => {
           minDelta: activeBarStats.minDelta,
           priceLevels: processed
       };
-  }, [activeBarStats, currentPrice]); 
+  }, [activeBarStats, currentPrice]);
+
+  // --- CVD (Cumulative Volume Delta) Data Transformation ---
+  // Converts historyBars + activeBarStats into CVD candle format
+  // CVD is cumulative: each bar's Open = previous bar's Close
+  const cvdData: CVDCandle[] = useMemo(() => {
+    const result: CVDCandle[] = [];
+    let cumulativeDelta = 0;
+
+    // Process completed history bars
+    for (let i = 0; i < historyBars.length; i++) {
+      const bar = historyBars[i];
+      const cvdOpen = cumulativeDelta;
+      const cvdClose = cvdOpen + bar.delta;
+      const cvdHigh = cvdOpen + bar.maxDelta;
+      const cvdLow = cvdOpen + bar.minDelta;
+
+      result.push({
+        time: i,
+        open: cvdOpen,
+        high: Math.max(cvdHigh, cvdOpen, cvdClose),
+        low: Math.min(cvdLow, cvdOpen, cvdClose),
+        close: cvdClose,
+      });
+
+      cumulativeDelta = cvdClose;
+    }
+
+    // Add active bar (real-time)
+    if (activeBarStats.totalVolume > 0) {
+      const cvdOpen = cumulativeDelta;
+      const cvdClose = cvdOpen + activeBarStats.currentDelta;
+      const cvdHigh = cvdOpen + activeBarStats.maxDelta;
+      const cvdLow = cvdOpen + activeBarStats.minDelta;
+
+      result.push({
+        time: historyBars.length,
+        open: cvdOpen,
+        high: Math.max(cvdHigh, cvdOpen, cvdClose),
+        low: Math.min(cvdLow, cvdOpen, cvdClose),
+        close: cvdClose,
+      });
+    }
+
+    return result;
+  }, [historyBars, activeBarStats.currentDelta, activeBarStats.maxDelta, activeBarStats.minDelta, activeBarStats.totalVolume]); 
 
   const handleThresholdChange = (e: React.ChangeEvent<HTMLInputElement>) => {
       setTempInput(e.target.value);
@@ -775,6 +821,9 @@ const App: React.FC = () => {
                 globalLow={globalLow}
                 priceStep={priceGrouping}
             />
+
+            {/* CVD Chart - Below FootprintTable */}
+            <CVDChart data={cvdData} height={150} />
         </div>
 
         {/* Right Panel: Tick List */}
