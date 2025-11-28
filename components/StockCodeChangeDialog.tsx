@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { fetchStockInfo, subscribeToStock } from '../services/websocketDataService';
+import { fetchStockInfo, subscribeToStock, fetchWatchlist } from '../services/websocketDataService';
 import './StockCodeChangeDialog.css';
 
 interface StockCodeChangeDialogProps {
@@ -7,7 +7,13 @@ interface StockCodeChangeDialogProps {
   onClose: () => void;
   onApply: (code: string, name: string) => void;
   initialCode: string;
-  dataSource?: 'mock' | 'raw' | 'websocket'; // 데이터 소스 (WebSocket 모드일 때만 구독 버튼 표시)
+  dataSource?: 'mock' | 'raw' | 'websocket';
+}
+
+interface WatchlistItem {
+  code: string;
+  name: string;
+  isLoading: boolean;
 }
 
 const StockCodeChangeDialog: React.FC<StockCodeChangeDialogProps> = ({
@@ -23,14 +29,61 @@ const StockCodeChangeDialog: React.FC<StockCodeChangeDialogProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [subscribeStatus, setSubscribeStatus] = useState<string | null>(null);
 
+  // Watchlist 관련 상태
+  const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
+  const [isLoadingWatchlist, setIsLoadingWatchlist] = useState(false);
+  const [selectedWatchlistCode, setSelectedWatchlistCode] = useState<string | null>(null);
+
+  // 다이얼로그 열릴 때 watchlist 로드
   useEffect(() => {
-    if (isOpen) {
+    if (isOpen && dataSource === 'websocket') {
+      loadWatchlist();
       setInputCode(initialCode);
       setStockName('');
       setError(null);
       setSubscribeStatus(null);
+      setSelectedWatchlistCode(null);
     }
-  }, [isOpen, initialCode]);
+  }, [isOpen, dataSource, initialCode]);
+
+  const loadWatchlist = async () => {
+    setIsLoadingWatchlist(true);
+    try {
+      const codes = await fetchWatchlist();
+
+      // 각 종목의 이름을 조회
+      const items: WatchlistItem[] = codes.map(code => ({
+        code,
+        name: '',
+        isLoading: true
+      }));
+      setWatchlist(items);
+
+      // 병렬로 종목명 조회
+      const updatedItems = await Promise.all(
+        codes.map(async (code) => {
+          try {
+            const info = await fetchStockInfo(code);
+            return { code, name: info.name, isLoading: false };
+          } catch {
+            return { code, name: '조회 실패', isLoading: false };
+          }
+        })
+      );
+      setWatchlist(updatedItems);
+    } catch (err) {
+      console.error('Failed to load watchlist:', err);
+    } finally {
+      setIsLoadingWatchlist(false);
+    }
+  };
+
+  const handleWatchlistSelect = (item: WatchlistItem) => {
+    setSelectedWatchlistCode(item.code);
+    setInputCode(item.code);
+    setStockName(item.name);
+    setError(null);
+  };
 
   const handleFetchStockInfo = async () => {
     if (!inputCode.trim()) {
@@ -40,6 +93,7 @@ const StockCodeChangeDialog: React.FC<StockCodeChangeDialogProps> = ({
 
     setIsLoading(true);
     setError(null);
+    setSelectedWatchlistCode(null);
 
     try {
       const info = await fetchStockInfo(inputCode);
@@ -73,6 +127,8 @@ const StockCodeChangeDialog: React.FC<StockCodeChangeDialogProps> = ({
       const result = await subscribeToStock(inputCode);
       if (result.status === 'success') {
         setSubscribeStatus(`✅ ${result.message}`);
+        // Watchlist 새로고침
+        loadWatchlist();
       } else if (result.status === 'already_subscribed') {
         setSubscribeStatus(`ℹ️ 이미 구독 중인 종목입니다`);
       } else {
@@ -95,20 +151,60 @@ const StockCodeChangeDialog: React.FC<StockCodeChangeDialogProps> = ({
 
   return (
     <div className="dialog-overlay" onClick={onClose}>
-      <div className="dialog-content" onClick={(e) => e.stopPropagation()}>
+      <div className="dialog-content stock-dialog" onClick={(e) => e.stopPropagation()}>
         <div className="dialog-header">
-          <h3>종목 코드 변경</h3>
+          <h3>종목 변경</h3>
           <button className="close-button" onClick={onClose}>×</button>
         </div>
 
         <div className="dialog-body">
+          {/* WebSocket 모드일 때만 Watchlist 표시 */}
+          {dataSource === 'websocket' && (
+            <div className="watchlist-section">
+              <label>
+                구독 중인 종목
+                {isLoadingWatchlist && <span className="loading-text"> (로딩중...)</span>}
+              </label>
+              <div className="watchlist-grid">
+                {watchlist.map((item) => (
+                  <button
+                    key={item.code}
+                    className={`watchlist-item ${selectedWatchlistCode === item.code ? 'selected' : ''} ${item.code === initialCode ? 'current' : ''}`}
+                    onClick={() => handleWatchlistSelect(item)}
+                    disabled={item.isLoading}
+                  >
+                    <span className="watchlist-code">{item.code}</span>
+                    <span className="watchlist-name">
+                      {item.isLoading ? '...' : item.name}
+                    </span>
+                    {item.code === initialCode && (
+                      <span className="current-badge">현재</span>
+                    )}
+                  </button>
+                ))}
+                {watchlist.length === 0 && !isLoadingWatchlist && (
+                  <div className="watchlist-empty">구독 중인 종목이 없습니다</div>
+                )}
+              </div>
+            </div>
+          )}
+
+          <div className="divider-section">
+            <div className="divider-line"></div>
+            <span className="divider-text">또는 새 종목 입력</span>
+            <div className="divider-line"></div>
+          </div>
+
           <div className="input-group">
             <label>종목 코드</label>
             <div className="input-row">
               <input
                 type="text"
                 value={inputCode}
-                onChange={(e) => setInputCode(e.target.value.toUpperCase())}
+                onChange={(e) => {
+                  setInputCode(e.target.value.toUpperCase());
+                  setSelectedWatchlistCode(null);
+                }}
                 onKeyPress={handleKeyPress}
                 placeholder="예: 005930"
                 maxLength={6}

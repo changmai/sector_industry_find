@@ -1,6 +1,8 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
+import { BrowserRouter } from 'react-router-dom';
 import App from './App';
+import { WebSocketProvider } from './contexts/WebSocketContext';
 
 const rootElement = document.getElementById('root');
 if (!rootElement) {
@@ -8,4 +10,10 @@ if (!rootElement) {
 }
 
 const root = ReactDOM.createRoot(rootElement);
-root.render(<App />);
+root.render(
+  <BrowserRouter>
+    <WebSocketProvider>
+      <App />
+    </WebSocketProvider>
+  </BrowserRouter>
+);

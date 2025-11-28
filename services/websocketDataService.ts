@@ -239,6 +239,33 @@ export async function fetchHistoricalData(code: string, date?: string): Promise<
 }
 
 /**
+ * 서버의 watchlist 조회 (구독 중인 종목 목록)
+ * @returns watchlist 종목 코드 배열
+ */
+export async function fetchWatchlist(): Promise<string[]> {
+  try {
+    const isDev = window.location.hostname.startsWith('192.168.') ||
+                  window.location.hostname === 'localhost' ||
+                  window.location.hostname === '127.0.0.1';
+    const host = isDev ? 'localhost' : window.location.hostname;
+    const apiBase = `${window.location.protocol}//${host}:8000`;
+
+    const response = await fetch(`${apiBase}/`);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch watchlist: ${response.status}`);
+    }
+
+    const data = await response.json();
+    console.log(`📋 Watchlist loaded: ${data.watchlist?.length || 0} stocks`);
+    return data.watchlist || [];
+
+  } catch (error) {
+    console.error('Error fetching watchlist:', error);
+    return [];
+  }
+}
+
+/**
  * 새로운 종목을 동적으로 구독 추가 (서버 재시작 불필요)
  * @param code 종목 코드 (예: '035720')
  * @returns 구독 결과

@@ -2,16 +2,31 @@
 FastAPI 백엔드 서버
 LS증권 WebSocket 데이터를 Frontend로 중계
 Server-Driven 아키텍처: 서버 시작 시 자동으로 관심종목 데이터 수집
+
+[v2.0] 프로그램 매매 연구 도구 통합
+- UPH(통합프로그램매매종목별) 구독
+- 비차익 매수 급증 이벤트 감지
+- 가격 추적 및 수익률 분석
 """
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
 from contextlib import asynccontextmanager
 import asyncio
 import json
 import requests
 import os
+from datetime import datetime
+from typing import Optional
 from dotenv import load_dotenv
 from ls_websocket import LSWebSocketClient
+
+# 연구 모듈 임포트
+from research.research_db import ResearchDB, ProgramEvent
+from research.event_detector import EventDetector, THRESHOLD_VALUE
+from research.price_tracker import PriceTracker
+from research.report_generator import ReportGenerator
+from research.backtester import Backtester, create_backtester
 
 # 환경변수 로드
 load_dotenv()
@@ -25,6 +40,14 @@ REST_URL = "https://openapi.ls-sec.co.kr:8080"
 ls_client: LSWebSocketClient = None
 connected_clients = set()
 watchlist_codes = []
+
+# 연구 도구 전역 변수
+research_db: ResearchDB = None
+event_detector: EventDetector = None
+price_tracker: PriceTracker = None
+report_generator: ReportGenerator = None
+backtester: Backtester = None  # 백테스터
+stock_names_cache: dict = {}  # 종목명 캐시
 
 
 def load_watchlist() -> list:
@@ -57,6 +80,7 @@ def load_watchlist() -> list:
 async def lifespan(app: FastAPI):
     """FastAPI Lifespan Event: 서버 시작/종료 시 실행"""
     global ls_client, watchlist_codes
+    global research_db, event_detector, price_tracker, report_generator, backtester
 
     # ========== STARTUP ==========
     print("\n" + "="*60)
@@ -66,13 +90,43 @@ async def lifespan(app: FastAPI):
     # 1. 관심종목 로드
     watchlist_codes = load_watchlist()
 
-    # 2. LS증권 WebSocket 클라이언트 생성
+    # 2. 연구 도구 초기화
+    print("\n📊 Initializing Research Tools...")
+    research_db = ResearchDB()
+    await research_db.init_tables()
+    # 마이그레이션: 추세/다이버전스 컬럼 추가
+    await research_db.migrate_add_trend_columns()
+
+    event_detector = EventDetector(threshold_value=THRESHOLD_VALUE)
+    price_tracker = PriceTracker(db=research_db)
+
+    # 종목명 조회 함수 설정
+    def get_stock_name(code: str) -> str:
+        return stock_names_cache.get(code, code)
+
+    report_generator = ReportGenerator(db=research_db, stock_name_getter=get_stock_name)
+
+    # 백테스터 초기화
+    backtester = create_backtester(uph_data_dir="uph_raw_data")
+    print("✅ Research Tools initialized (including Backtester)")
+
+    # 3. LS증권 WebSocket 클라이언트 생성
     async def on_data(code: str, body: dict):
-        """LS증권 데이터를 모든 Frontend 클라이언트로 전송"""
-        # 디버깅: 데이터 수신 확인
-        price = body.get("price", "?")
-        volume = body.get("cvolume", "?")
-        print(f"[DATA] {code} | Price: {price} | Volume: {volume} | Clients: {len(connected_clients)}")
+        """LS증권 체결 데이터를 모든 Frontend 클라이언트로 전송"""
+        # 디버깅: 데이터 수신 확인 (너무 많아서 주석 처리)
+        # price = body.get("price", "?")
+        # volume = body.get("cvolume", "?")
+        # print(f"[DATA] {code} | Price: {price} | Volume: {volume} | Clients: {len(connected_clients)}")
+
+        # price_tracker 및 event_detector에 가격 업데이트
+        try:
+            price = int(body.get("price", 0))
+            if price > 0:
+                price_tracker.update_price(code, price)
+                # 이벤트 감지기에도 가격 히스토리 전달 (다이버전스 분석용)
+                event_detector.update_price(code, price)
+        except (ValueError, TypeError):
+            pass
 
         disconnected = set()
         for client in list(connected_clients):
@@ -86,18 +140,81 @@ async def lifespan(app: FastAPI):
         for client in disconnected:
             connected_clients.discard(client)
 
+    async def on_program_data(code: str, body: dict):
+        """UPH 프로그램 매매 데이터 처리 - 이벤트 감지 및 기록"""
+        # 이벤트 감지
+        result = event_detector.detect(code, body)
+
+        if result.is_event:
+            # 이벤트 발생!
+            event_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+            # 추세 정보 및 다이버전스 추출
+            trend_info = result.details.get('trend_info', {})
+            divergence_type = result.details.get('divergence_type')
+
+            print(f"\n🎯 [EVENT] {event_time} | {code} | {result.event_type}")
+            print(f"   Delta: {result.delta_vol:,}주 | Value: {result.estimated_value:,.0f}원 | Price: {result.current_price:,}원")
+            if divergence_type:
+                trend_5m = trend_info.get('price_trend_5m', '?')
+                print(f"   📊 Divergence: {divergence_type} (5분 추세: {trend_5m})")
+
+            # DB에 이벤트 기록 (추세 정보 포함)
+            event = ProgramEvent(
+                event_time=event_time,
+                code=code,
+                event_type=result.event_type,
+                trigger_value=result.estimated_value,
+                price_at_event=result.current_price,
+                bshrem=result.details.get('bshrem', 0),
+                bdhrem=result.details.get('bdhrem', 0),
+                bshvolume=result.details.get('curr_bshvolume', 0),
+                bdhvolume=result.details.get('bdhvolume', 0),
+                tval=result.details.get('tval', 0),
+                delta_vol=result.delta_vol,
+                # 추세 정보 (다이버전스 분석용)
+                price_1m_ago=trend_info.get('price_1m_ago'),
+                price_3m_ago=trend_info.get('price_3m_ago'),
+                price_5m_ago=trend_info.get('price_5m_ago'),
+                price_change_1m=trend_info.get('price_change_1m'),
+                price_change_3m=trend_info.get('price_change_3m'),
+                price_change_5m=trend_info.get('price_change_5m'),
+                price_trend_5m=trend_info.get('price_trend_5m'),
+                price_high_5m=trend_info.get('price_high_5m'),
+                price_low_5m=trend_info.get('price_low_5m'),
+                divergence_type=divergence_type
+            )
+
+            try:
+                event_id = await research_db.insert_event(event)
+                print(f"   📝 Event #{event_id} saved to database")
+
+                # 가격 추적 시작
+                await price_tracker.add_tracking_event(
+                    event_id=event_id,
+                    code=code,
+                    price_at_event=result.current_price
+                )
+            except Exception as e:
+                print(f"   ❌ Failed to save event: {e}")
+
     def on_log(msg: str):
         print(f"[LS] {msg}")
 
     ls_client = LSWebSocketClient(
         target_codes=watchlist_codes,
         on_data=on_data,
-        on_log=on_log
+        on_log=on_log,
+        on_program_data=on_program_data,  # UPH 콜백 추가
+        enable_uph=True  # UPH 구독 활성화
     )
 
-    # 3. 백그라운드에서 LS증권 연결 시작
+    # 4. 백그라운드에서 LS증권 연결 시작
     ls_client.start()
     asyncio.create_task(ls_client.connect_and_subscribe())
+
+    # 5. 가격 추적 루프 시작
+    price_tracker.start()
 
     print("✅ LS WebSocket client started in background")
     print("="*60 + "\n")
@@ -109,10 +226,17 @@ async def lifespan(app: FastAPI):
     print("🛑 SERVER SHUTDOWN - Closing LS WebSocket...")
     print("="*60)
 
+    if price_tracker:
+        price_tracker.stop()
+
     if ls_client:
         ls_client.stop()
 
+    if research_db:
+        research_db.close()
+
     print("✅ LS WebSocket client stopped")
+    print("✅ Research tools stopped")
     print("="*60 + "\n")
 
 
@@ -345,6 +469,9 @@ async def get_stock_info(code: str):
             # t1102 응답에서 종목명 추출
             if "t1102OutBlock" in result:
                 stock_name = result["t1102OutBlock"].get("hname", "").strip()
+                # 캐시에 저장
+                if stock_name:
+                    stock_names_cache[code] = stock_name
                 return {
                     "code": code,
                     "name": stock_name,
@@ -419,6 +546,505 @@ async def websocket_endpoint(websocket: WebSocket):
         connected_clients.discard(websocket)
         print(f"[INFO] Remaining clients: {len(connected_clients)}")
         # 주의: LS증권 연결은 절대 끊지 않음 (서버가 계속 데이터 수집)
+
+
+# ============================================================================
+# 연구 도구 API 엔드포인트
+# ============================================================================
+
+@app.get("/api/research/events")
+async def get_research_events(
+    date: Optional[str] = Query(None, description="날짜 (YYYY-MM-DD)"),
+    limit: int = Query(50, description="최대 결과 수")
+):
+    """
+    프로그램 매매 이벤트 목록 조회
+
+    Args:
+        date: 날짜 (YYYY-MM-DD, 기본값: 오늘)
+        limit: 최대 결과 수 (기본값: 50)
+    """
+    if not research_db:
+        raise HTTPException(status_code=503, detail="Research database not initialized")
+
+    try:
+        if date:
+            events = await research_db.get_events_by_date(date)
+        else:
+            events = await research_db.get_recent_events(limit)
+
+        return {
+            "status": "success",
+            "count": len(events),
+            "events": [
+                {
+                    "id": e.id,
+                    "event_time": e.event_time,
+                    "code": e.code,
+                    "event_type": e.event_type,
+                    "trigger_value": e.trigger_value,
+                    "price_at_event": e.price_at_event,
+                    "delta_vol": e.delta_vol,
+                    "stock_name": stock_names_cache.get(e.code, e.code)
+                }
+                for e in events
+            ]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/research/events/{event_id}")
+async def get_research_event_detail(event_id: int):
+    """
+    이벤트 상세 조회 (가격 추적 포함)
+    """
+    if not research_db:
+        raise HTTPException(status_code=503, detail="Research database not initialized")
+
+    try:
+        event = await research_db.get_event_by_id(event_id)
+        if not event:
+            raise HTTPException(status_code=404, detail=f"Event #{event_id} not found")
+
+        trackings = await research_db.get_price_tracking_for_event(event_id)
+
+        return {
+            "status": "success",
+            "event": {
+                "id": event.id,
+                "event_time": event.event_time,
+                "code": event.code,
+                "stock_name": stock_names_cache.get(event.code, event.code),
+                "event_type": event.event_type,
+                "trigger_value": event.trigger_value,
+                "price_at_event": event.price_at_event,
+                "delta_vol": event.delta_vol,
+                "bshrem": event.bshrem,
+                "bdhrem": event.bdhrem,
+                "bshvolume": event.bshvolume,
+                "bdhvolume": event.bdhvolume,
+                "tval": event.tval
+            },
+            "price_tracking": [
+                {
+                    "minutes_after": t.minutes_after,
+                    "price": t.price,
+                    "price_change_pct": t.price_change_pct,
+                    "tracking_time": t.tracking_time
+                }
+                for t in trackings
+            ]
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/research/summary/{date}")
+async def get_research_summary(date: str):
+    """
+    일간 요약 조회 (JSON)
+    """
+    if not report_generator:
+        raise HTTPException(status_code=503, detail="Report generator not initialized")
+
+    try:
+        summary = await report_generator.generate_summary_json(date)
+        return summary
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/research/report/{date}", response_class=PlainTextResponse)
+async def get_research_report(date: str):
+    """
+    일간 리포트 조회 (텍스트)
+    """
+    if not report_generator:
+        raise HTTPException(status_code=503, detail="Report generator not initialized")
+
+    try:
+        report = await report_generator.generate_daily_report(date)
+        return report
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/research/report", response_class=PlainTextResponse)
+async def get_today_research_report():
+    """
+    오늘 일간 리포트 조회 (텍스트)
+    """
+    if not report_generator:
+        raise HTTPException(status_code=503, detail="Report generator not initialized")
+
+    try:
+        today = datetime.now().strftime('%Y-%m-%d')
+        report = await report_generator.generate_daily_report(today)
+        return report
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/research/config")
+async def update_research_config(threshold_value: int = Query(..., description="이벤트 감지 최소 금액 (원)")):
+    """
+    이벤트 감지 설정 변경
+    """
+    if not event_detector:
+        raise HTTPException(status_code=503, detail="Event detector not initialized")
+
+    try:
+        old_value = event_detector.threshold_value
+        event_detector.update_threshold(threshold_value)
+
+        return {
+            "status": "success",
+            "old_threshold": old_value,
+            "new_threshold": threshold_value,
+            "message": f"Threshold updated: {old_value:,}원 -> {threshold_value:,}원"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/research/status")
+async def get_research_status():
+    """
+    연구 도구 상태 조회
+    """
+    # 백테스팅 가능한 파일 수
+    backtest_files = backtester.list_available_files() if backtester else []
+
+    return {
+        "status": "running",
+        "event_detector": {
+            "threshold_value": event_detector.threshold_value if event_detector else None,
+            "tracked_stocks": len(event_detector._prev_data) if event_detector else 0
+        },
+        "price_tracker": {
+            "pending_tasks": price_tracker.get_pending_count() if price_tracker else 0,
+            "tasks": price_tracker.get_pending_tasks() if price_tracker else []
+        },
+        "database": {
+            "path": research_db.db_path if research_db else None
+        },
+        "backtester": {
+            "available_files": len(backtest_files),
+            "uph_data_dir": backtester.uph_data_dir if backtester else None
+        }
+    }
+
+
+# ============================================================================
+# 백테스팅 API 엔드포인트
+# ============================================================================
+
+@app.get("/api/backtest/files")
+async def get_backtest_files():
+    """
+    백테스팅 가능한 UPH 데이터 파일 목록 조회
+
+    Returns:
+        List[Dict]: 파일 정보 목록
+    """
+    if not backtester:
+        raise HTTPException(status_code=503, detail="Backtester not initialized")
+
+    try:
+        files = backtester.list_available_files()
+        return {
+            "status": "success",
+            "count": len(files),
+            "files": files
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/backtest/run/{code}/{date}")
+async def run_backtest(
+    code: str,
+    date: str,
+    threshold: int = Query(THRESHOLD_VALUE, description="이벤트 감지 임계값 (원)")
+):
+    """
+    단일 종목/날짜 백테스트 실행
+
+    Args:
+        code: 종목코드 (예: 005930)
+        date: 날짜 (YYYYMMDD)
+        threshold: 이벤트 감지 임계값 (기본: 3천만원)
+
+    Returns:
+        Dict: 백테스트 결과
+    """
+    if not backtester:
+        raise HTTPException(status_code=503, detail="Backtester not initialized")
+
+    try:
+        result = backtester.run_backtest(
+            code=code,
+            date=date,
+            threshold_value=threshold
+        )
+
+        return {
+            "status": "success",
+            "result": backtester._result_to_dict(result)
+        }
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/backtest/run/{code}/{date}/report", response_class=PlainTextResponse)
+async def get_backtest_report(
+    code: str,
+    date: str,
+    threshold: int = Query(THRESHOLD_VALUE, description="이벤트 감지 임계값 (원)")
+):
+    """
+    백테스트 리포트 조회 (텍스트)
+
+    Args:
+        code: 종목코드
+        date: 날짜 (YYYYMMDD)
+        threshold: 이벤트 감지 임계값
+
+    Returns:
+        str: 텍스트 리포트
+    """
+    if not backtester:
+        raise HTTPException(status_code=503, detail="Backtester not initialized")
+
+    try:
+        result = backtester.run_backtest(
+            code=code,
+            date=date,
+            threshold_value=threshold
+        )
+        report = backtester.generate_backtest_report(result)
+        return report
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# 연구 대시보드 API 엔드포인트 (v2.1)
+# ============================================================================
+
+async def fetch_stock_name(code: str) -> str:
+    """종목명 조회 (캐시 우선, 없으면 API 호출)"""
+    if code in stock_names_cache:
+        return stock_names_cache[code]
+
+    try:
+        token = get_access_token()
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+            "tr_cd": "t1102",
+            "tr_cont": "N",
+            "tr_cont_key": "",
+            "mac_address": ""
+        }
+        data = {"t1102InBlock": {"shcode": code}}
+
+        resp = requests.post(
+            f"{REST_URL}/stock/market-data",
+            headers=headers,
+            json=data,
+            timeout=5
+        )
+
+        if resp.status_code == 200:
+            result = resp.json()
+            if "t1102OutBlock" in result:
+                stock_name = result["t1102OutBlock"].get("hname", "").strip()
+                if stock_name:
+                    stock_names_cache[code] = stock_name
+                    return stock_name
+    except Exception as e:
+        print(f"[WARN] Failed to fetch stock name for {code}: {e}")
+
+    return code  # 실패시 코드 반환
+
+
+@app.get("/api/research/live")
+async def get_research_live():
+    """
+    실시간 연구 대시보드 데이터
+    - 전체 요약 통계
+    - 최근 이벤트 목록 (수익률 포함)
+    - 종목별 요약
+    """
+    if not research_db:
+        raise HTTPException(status_code=503, detail="Research database not initialized")
+
+    try:
+        # 병렬로 데이터 조회
+        summary_task = research_db.get_live_summary()
+        events_task = research_db.get_recent_events_with_returns(limit=20)
+        stocks_task = research_db.get_stock_summary()
+
+        summary, events, by_stock = await asyncio.gather(
+            summary_task, events_task, stocks_task
+        )
+
+        # 고유 종목코드 수집
+        unique_codes = set()
+        for event in events:
+            unique_codes.add(event['code'])
+        for stock in by_stock:
+            unique_codes.add(stock['code'])
+
+        # 캐시에 없는 종목명 조회
+        for code in unique_codes:
+            if code not in stock_names_cache:
+                await fetch_stock_name(code)
+
+        # 종목명 추가
+        for event in events:
+            event['stock_name'] = stock_names_cache.get(event['code'], event['code'])
+
+        for stock in by_stock:
+            stock['stock_name'] = stock_names_cache.get(stock['code'], stock['code'])
+
+        return {
+            "status": "success",
+            "summary": summary,
+            "recent_events": events,
+            "by_stock": by_stock
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/research/stock/{code}/detail")
+async def get_research_stock_detail(code: str):
+    """
+    특정 종목의 상세 통계
+    - 종목별 요약
+    - 이벤트 목록 (수익률 포함)
+    - 시간대별 통계
+    - Delta 범위별 통계
+    """
+    if not research_db:
+        raise HTTPException(status_code=503, detail="Research database not initialized")
+
+    try:
+        detail = await research_db.get_stock_detail(code)
+
+        return {
+            "status": "success",
+            "code": code,
+            "stock_name": stock_names_cache.get(code, code),
+            "summary": detail['summary'],
+            "events": detail['events'],
+            "by_hour": detail['by_hour'],
+            "by_delta": detail['by_delta']
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/research/event/{event_id}/detail")
+async def get_research_event_detail_v2(event_id: int):
+    """
+    이벤트 상세 정보 (가격 추적 차트용)
+    """
+    if not research_db:
+        raise HTTPException(status_code=503, detail="Research database not initialized")
+
+    try:
+        event = await research_db.get_event_detail(event_id)
+        if not event:
+            raise HTTPException(status_code=404, detail=f"Event #{event_id} not found")
+
+        # 종목명 추가
+        event['stock_name'] = stock_names_cache.get(event['code'], event['code'])
+
+        return {
+            "status": "success",
+            "event": event
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/research/divergence")
+async def get_divergence_analysis(date: Optional[str] = Query(None, description="날짜 (YYYY-MM-DD)")):
+    """
+    다이버전스 패턴별 수익률 분석
+
+    Returns:
+        - by_divergence: 다이버전스 유형별 통계 (bullish, bearish, none)
+        - by_trend: 가격 추세별 이벤트 수익률
+    """
+    if not research_db:
+        raise HTTPException(status_code=503, detail="Research database not initialized")
+
+    try:
+        # 병렬로 분석 데이터 조회
+        divergence_task = research_db.get_divergence_analysis(date)
+        trend_task = research_db.get_trend_based_analysis(date)
+
+        by_divergence, by_trend = await asyncio.gather(divergence_task, trend_task)
+
+        return {
+            "status": "success",
+            "date": date,
+            "by_divergence": by_divergence,
+            "by_trend": by_trend
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# 백테스팅 API 엔드포인트
+# ============================================================================
+
+@app.post("/api/backtest/multi")
+async def run_multi_backtest(
+    codes: Optional[list] = Query(None, description="종목코드 리스트"),
+    dates: Optional[list] = Query(None, description="날짜 리스트 (YYYYMMDD)"),
+    threshold: int = Query(THRESHOLD_VALUE, description="이벤트 감지 임계값 (원)")
+):
+    """
+    여러 종목/날짜에 대한 백테스트 실행
+
+    Args:
+        codes: 종목코드 리스트 (None이면 전체)
+        dates: 날짜 리스트 (None이면 전체)
+        threshold: 이벤트 감지 임계값
+
+    Returns:
+        Dict: 종합 백테스트 결과
+    """
+    if not backtester:
+        raise HTTPException(status_code=503, detail="Backtester not initialized")
+
+    try:
+        result = backtester.run_multi_backtest(
+            codes=codes,
+            dates=dates,
+            threshold_value=threshold
+        )
+        return {
+            "status": "success",
+            **result
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":
