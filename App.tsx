@@ -4,9 +4,10 @@ import Header from './components/Header';
 import FootprintTable from './components/FootprintTable';
 import TickList from './components/TickList';
 import StockCodeChangeDialog from './components/StockCodeChangeDialog';
+import RawDataFileDialog from './components/RawDataFileDialog';
 import CVDChart from './components/CVDChart';
 import { generateTick } from './services/mockDataService';
-import { loadRawData } from './services/rawDataService';
+import { loadRawData, parseRawDataFile } from './services/rawDataService';
 import { connectWebSocket, changeTargetCode, fetchHistoricalData } from './services/websocketDataService';
 import { Tick, PriceLevelData, FootprintStats, Side, FootprintCandle, CVDCandle } from './types';
 import { CONFIG } from './constants';
@@ -25,6 +26,10 @@ const App: React.FC = () => {
   const [targetCode, setTargetCode] = useState(CONFIG.TARGET_CODE);
   const [targetName, setTargetName] = useState(CONFIG.TARGET_NAME);
   const [showStockChangeDialog, setShowStockChangeDialog] = useState(false);
+
+  // --- Raw Data File Selection ---
+  const [showRawDataDialog, setShowRawDataDialog] = useState(false);
+  const [rawDataFileName, setRawDataFileName] = useState<string | null>(null);
 
   // --- Data Source Selection ---
   const [dataSource, setDataSource] = useState<DataSource>('websocket');
@@ -181,19 +186,58 @@ const App: React.FC = () => {
     setShowStockChangeDialog(false);
   }, [dataSource, rotationMode, thresholds, priceGrouping]);
 
-  // Load Raw Data when mode is enabled
+  // Show Raw Data file dialog when mode is enabled
   useEffect(() => {
     if (dataSource === 'raw' && rawTicksRef.current.length === 0) {
-      console.log('📥 Loading raw data...');
-      loadRawData().then(ticks => {
-        rawTicksRef.current = ticks;
-        rawTickIndexRef.current = 0;
-        console.log(`✅ Raw data loaded: ${ticks.length} ticks ready`);
-      }).catch(err => {
-        console.error('❌ Failed to load raw data:', err);
-      });
+      // 파일이 선택되지 않았으면 다이얼로그 표시
+      setShowRawDataDialog(true);
     }
   }, [dataSource]);
+
+  // Handle Raw Data file selection
+  const handleRawDataFileSelect = useCallback(async (file: File) => {
+    console.log('📥 Loading raw data from file:', file.name);
+    try {
+      const ticks = await parseRawDataFile(file);
+      if (ticks.length === 0) {
+        console.error('❌ No valid ticks found in file');
+        return;
+      }
+
+      rawTicksRef.current = ticks;
+      rawTickIndexRef.current = 0;
+      setRawDataFileName(file.name);
+
+      // 차트 초기화
+      setTicks([]);
+      setHistoryBars([]);
+      allTicksHistory.current = [];
+      activeBarMap.current = new Map();
+      barIdCounter.current = 1;
+
+      // 첫 번째 틱의 가격으로 초기화
+      const firstTick = ticks[0];
+      setCurrentPrice(firstTick.price);
+
+      setActiveBarStats({
+        id: barIdCounter.current++,
+        startTime: new Date().toTimeString().split(' ')[0],
+        timestamp: Date.now(),
+        open: firstTick.price,
+        high: firstTick.price,
+        low: firstTick.price,
+        totalVolume: 0,
+        currentDelta: 0,
+        maxDelta: 0,
+        minDelta: 0
+      });
+
+      console.log(`✅ Raw data loaded: ${ticks.length} ticks ready`);
+      setShowRawDataDialog(false);
+    } catch (err) {
+      console.error('❌ Failed to load raw data:', err);
+    }
+  }, []);
 
   // Load Historical Data when switching to WebSocket mode (only once on mount)
   const initialLoadDone = useRef(false);
@@ -690,6 +734,14 @@ const App: React.FC = () => {
       return;
     }
 
+    // Raw Data Mode: 파일이 로드되지 않았으면 시작하지 않음
+    if (dataSource === 'raw' && rawTicksRef.current.length === 0) {
+      console.log('⏸️ Raw data not loaded yet, waiting...');
+      return;
+    }
+
+    console.log(`▶️ Starting ${dataSource} playback, ticks: ${rawTicksRef.current.length}, index: ${rawTickIndexRef.current}`);
+
     const interval = setInterval(() => {
       let newTick: Tick;
 
@@ -711,7 +763,7 @@ const App: React.FC = () => {
     }, dataSource === 'raw' ? 100 : CONFIG.TICK_RATE_MS); // 100ms for Raw Data, 200ms for Mock Data
 
     return () => clearInterval(interval);
-  }, [dataSource, processTick]); // Re-bind when data source or processTick changes
+  }, [dataSource, processTick, rawDataFileName]); // Re-bind when data source, processTick, or file changes
 
   const activeBarCandle: FootprintCandle | null = useMemo(() => {
       if (activeBarStats.totalVolume === 0 && activeBarMap.current.size === 0) return null;
@@ -890,9 +942,11 @@ const App: React.FC = () => {
                         onChange={(e) => {
                             const newSource = e.target.value as DataSource;
                             setDataSource(newSource);
-                            // Reset raw data index when switching to raw
+                            // Reset raw data when switching to raw mode (prompt file selection)
                             if (newSource === 'raw') {
+                                rawTicksRef.current = [];
                                 rawTickIndexRef.current = 0;
+                                setRawDataFileName(null);
                             }
                         }}
                         className="text-[10px] px-3 py-1 rounded font-semibold transition-colors border bg-gray-700 text-gray-300 hover:bg-gray-600 border-gray-600 cursor-pointer"
@@ -901,6 +955,15 @@ const App: React.FC = () => {
                         <option value="raw">📊 Raw Data</option>
                         <option value="websocket">🔴 Live WebSocket</option>
                     </select>
+                    {dataSource === 'raw' && rawDataFileName && (
+                        <button
+                            onClick={() => setShowRawDataDialog(true)}
+                            className="text-[10px] text-orange-400 bg-gray-800 px-2 py-0.5 rounded border border-gray-700 font-mono hover:bg-gray-700 cursor-pointer"
+                            title="다른 파일 선택"
+                        >
+                            📁 {rawDataFileName.length > 20 ? rawDataFileName.slice(0, 17) + '...' : rawDataFileName}
+                        </button>
+                    )}
                     {dataSource === 'websocket' && (
                         <span className="text-[10px] text-green-400 bg-gray-800 px-2 py-0.5 rounded border border-gray-700 font-mono">
                             {wsStatus}
@@ -937,6 +1000,19 @@ const App: React.FC = () => {
         onApply={handleStockCodeChange}
         initialCode={targetCode}
         dataSource={dataSource}
+      />
+
+      {/* Raw Data File Selection Dialog */}
+      <RawDataFileDialog
+        isOpen={showRawDataDialog}
+        onClose={() => {
+          setShowRawDataDialog(false);
+          // 파일 선택 취소 시 mock 모드로 돌아감
+          if (rawTicksRef.current.length === 0) {
+            setDataSource('mock');
+          }
+        }}
+        onApply={handleRawDataFileSelect}
       />
     </div>
   );
