@@ -13,10 +13,16 @@ export const COLORS = {
   IMBALANCE_BORDER: 'border-orange-400',
   VA_LINE: 'bg-gray-400',
   VAH_VAL_LINE: 'bg-white',
-  LVN_BG: 'bg-amber-900/20',
+  LVN_BG: 'bg-yellow-500/30',
 };
 
-export const ROW_HEIGHT = 22; // px height for a single price row
+export const ROW_HEIGHT = 16; // px height for a single price row (at 100% zoom)
+export const BAR_WIDTH = 140; // px width for a single bar (at 100% zoom)
+
+// Zoom settings
+export const ZOOM_LEVELS = [50, 75, 100, 125, 150] as const;
+export type ZoomLevel = typeof ZOOM_LEVELS[number];
+export const DEFAULT_ZOOM = 100;
 
 export const CONFIG = {
   // Target Stock: Samsung Electronics (Example)

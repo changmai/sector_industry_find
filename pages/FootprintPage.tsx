@@ -5,15 +5,16 @@ import FootprintTable from '../components/FootprintTable';
 import TickList from '../components/TickList';
 import StockCodeChangeDialog from '../components/StockCodeChangeDialog';
 import RawDataFileDialog from '../components/RawDataFileDialog';
-import CVDChart from '../components/CVDChart';
+import CVDChart, { CVDChartHandle } from '../components/CVDChart';
+import SimulationControls, { PlaybackSpeed } from '../components/SimulationControls';
 import { generateTick } from '../services/mockDataService';
-import { loadRawData, parseRawDataFile } from '../services/rawDataService';
-import { connectWebSocket, changeTargetCode, fetchHistoricalData } from '../services/websocketDataService';
+import { loadRawData, parseRawDataFile, extractStockCodeFromFilename } from '../services/rawDataService';
+import { connectWebSocket, changeTargetCode, fetchHistoricalData, fetchStockInfo } from '../services/websocketDataService';
 import { Tick, PriceLevelData, FootprintStats, Side, FootprintCandle, CVDCandle } from '../types';
-import { CONFIG } from '../constants';
+import { CONFIG, ZOOM_LEVELS, ZoomLevel, DEFAULT_ZOOM, BAR_WIDTH } from '../constants';
 import { calculateFootprintIndicators } from '../utils';
 import { groupPriceLevel, PRICE_GROUPING_OPTIONS, PriceGroupingOption } from '../utils/priceGrouping';
-import { Clock, BarChart2, MoveVertical, Layers } from 'lucide-react';
+import { Clock, BarChart2, MoveVertical, Layers, ZoomIn, ZoomOut } from 'lucide-react';
 import { useWebSocket } from '../contexts/WebSocketContext';
 
 type RotationMode = 'VOLUME' | 'TIME' | 'RANGE';
@@ -35,12 +36,28 @@ const FootprintPage: React.FC = () => {
   const [showRawDataDialog, setShowRawDataDialog] = useState(false);
   const [rawDataFileName, setRawDataFileName] = useState<string | null>(null);
 
+  // --- Simulation State (Raw Data Mode) ---
+  const [simIsPlaying, setSimIsPlaying] = useState(false);
+  const [simSpeed, setSimSpeed] = useState<PlaybackSpeed>(1);
+  const [simCurrentTime, setSimCurrentTime] = useState(0);
+  const [simStartTime, setSimStartTime] = useState(0);
+  const [simEndTime, setSimEndTime] = useState(0);
+  const [simCurrentTickIdx, setSimCurrentTickIdx] = useState(0);
+  const simTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const [simDataLoaded, setSimDataLoaded] = useState(false);
+
+  // 시간 기반 시뮬레이션을 위한 ref
+  const simLastRealTimeRef = useRef(0);  // 마지막 렌더링의 실제 시간
+  const simLastSimTimeRef = useRef(0);   // 마지막 렌더링의 시뮬레이션 시간
+  const simProcessedIdxRef = useRef(0);  // 이미 처리된 틱 인덱스
+
   // --- Data Source Selection ---
   const [dataSource, setDataSource] = useState<DataSource>('websocket');
   const [wsStatus, setWsStatus] = useState<string>('준비');
   const rawTicksRef = useRef<Tick[]>([]);
   const rawTickIndexRef = useRef(0);
   const wsRef = useRef<WebSocket | null>(null);
+  const cvdChartRef = useRef<CVDChartHandle>(null);
 
   // --- Rotation Settings ---
   const [rotationMode, setRotationMode] = useState<RotationMode>('RANGE');
@@ -58,12 +75,37 @@ const FootprintPage: React.FC = () => {
   // --- Price Grouping Settings ---
   const [priceGrouping, setPriceGrouping] = useState<PriceGroupingOption>(1000);
 
+  // --- Zoom Settings ---
+  const [zoomLevel, setZoomLevel] = useState<ZoomLevel>(DEFAULT_ZOOM as ZoomLevel);
+
+  // --- CVD Chart Height (resizable) ---
+  const [cvdHeight, setCvdHeight] = useState(120);
+  const isResizingRef = useRef(false);
+  const resizeStartYRef = useRef(0);
+  const resizeStartHeightRef = useRef(0);
+
+  const handleZoomIn = useCallback(() => {
+    const currentIdx = ZOOM_LEVELS.indexOf(zoomLevel);
+    if (currentIdx < ZOOM_LEVELS.length - 1) {
+      setZoomLevel(ZOOM_LEVELS[currentIdx + 1]);
+    }
+  }, [zoomLevel]);
+
+  const handleZoomOut = useCallback(() => {
+    const currentIdx = ZOOM_LEVELS.indexOf(zoomLevel);
+    if (currentIdx > 0) {
+      setZoomLevel(ZOOM_LEVELS[currentIdx - 1]);
+    }
+  }, [zoomLevel]);
+
   // --- Sequential Footprint State ---
   const [historyBars, setHistoryBars] = useState<FootprintCandle[]>([]);
   const activeBarMap = useRef<Map<number, PriceLevelData>>(new Map());
   const barIdCounter = useRef<number>(1);
 
   // Store ALL ticks for recalculation when rotation mode changes
+  // Memory management: limit to MAX_TICKS_HISTORY to prevent unbounded growth
+  const MAX_TICKS_HISTORY = 50000; // ~10MB at 200 bytes/tick
   const allTicksHistory = useRef<Tick[]>([]);
 
   // Metadata for the active bar
@@ -99,6 +141,12 @@ const FootprintPage: React.FC = () => {
   // Handle stock code change
   const handleStockCodeChange = useCallback(async (newCode: string, newName: string) => {
     console.log(`📊 Changing stock to: ${newCode} - ${newName}`);
+
+    // 종목 변경 시 즉시 초기화 (데이터 로드 전) - 이전 종목 데이터 잔존 방지
+    setHistoryBars([]);
+    setTicks([]);
+    activeBarMap.current = new Map();
+    allTicksHistory.current = [];
 
     // WebSocket 모드인 경우: 과거 데이터 먼저 로드
     if (dataSource === 'websocket') {
@@ -212,6 +260,24 @@ const FootprintPage: React.FC = () => {
       rawTickIndexRef.current = 0;
       setRawDataFileName(file.name);
 
+      // 파일명에서 종목 코드 추출 및 종목명 조회
+      const extractedCode = extractStockCodeFromFilename(file.name);
+      if (extractedCode) {
+        console.log(`📊 Extracted stock code from filename: ${extractedCode}`);
+        setTargetCode(extractedCode);
+
+        // 종목명 조회 (백엔드 API)
+        try {
+          const stockInfo = await fetchStockInfo(extractedCode);
+          setTargetName(stockInfo.name);
+          console.log(`📊 Stock info: ${extractedCode} - ${stockInfo.name}`);
+        } catch (err) {
+          // API 실패 시 코드만 표시
+          setTargetName(`종목 ${extractedCode}`);
+          console.warn(`⚠️ Failed to fetch stock name for ${extractedCode}`);
+        }
+      }
+
       // 차트 초기화
       setTicks([]);
       setHistoryBars([]);
@@ -221,7 +287,22 @@ const FootprintPage: React.FC = () => {
 
       // 첫 번째 틱의 가격으로 초기화
       const firstTick = ticks[0];
+      const lastTick = ticks[ticks.length - 1];
       setCurrentPrice(firstTick.price);
+
+      // 시뮬레이션 시간 범위 설정
+      setSimStartTime(firstTick.timestamp);
+      setSimEndTime(lastTick.timestamp);
+      setSimCurrentTime(firstTick.timestamp);
+      setSimCurrentTickIdx(0);
+      setSimIsPlaying(false);
+      setSimSpeed(1);
+      setSimDataLoaded(true);
+
+      // ref 초기화
+      simProcessedIdxRef.current = 0;
+      simLastSimTimeRef.current = firstTick.timestamp;
+      simLastRealTimeRef.current = Date.now();
 
       setActiveBarStats({
         id: barIdCounter.current++,
@@ -237,6 +318,7 @@ const FootprintPage: React.FC = () => {
       });
 
       console.log(`✅ Raw data loaded: ${ticks.length} ticks ready`);
+      console.log(`📊 Time range: ${new Date(firstTick.timestamp).toTimeString()} ~ ${new Date(lastTick.timestamp).toTimeString()}`);
       setShowRawDataDialog(false);
     } catch (err) {
       console.error('❌ Failed to load raw data:', err);
@@ -508,12 +590,21 @@ const FootprintPage: React.FC = () => {
 
     setCurrentPrice(newTick.price);
 
-    // Store tick in full history for recalculation
+    // Store tick in full history for recalculation (with memory limit)
     allTicksHistory.current.push(newTick);
+    // Trim if exceeds limit (keep recent ticks)
+    if (allTicksHistory.current.length > MAX_TICKS_HISTORY) {
+      allTicksHistory.current = allTicksHistory.current.slice(-MAX_TICKS_HISTORY);
+    }
 
+    // Optimized: Avoid spread operator, use functional update with efficient slicing
     setTicks(prevTicks => {
-      const updated = [newTick, ...prevTicks];
-      return updated.slice(0, 200);
+      // If already at max capacity, just shift and add
+      if (prevTicks.length >= 200) {
+        const updated = [newTick, ...prevTicks.slice(0, 199)];
+        return updated;
+      }
+      return [newTick, ...prevTicks];
     });
 
     // --- Footprint Bar Logic ---
@@ -589,10 +680,8 @@ const FootprintPage: React.FC = () => {
                priceLevels: processedLevels
            };
 
-           setHistoryBars(prevHistory => {
-               const newHistory = [...prevHistory, finishedBar];
-               return newHistory;
-           });
+           // Optimized: Use concat instead of spread for better performance
+           setHistoryBars(prevHistory => prevHistory.concat(finishedBar));
 
            // Clear the map for new bar
            activeBarMap.current = new Map();
@@ -677,24 +766,36 @@ const FootprintPage: React.FC = () => {
     filterCodeRef.current = targetCode;
   }, [targetCode]);
 
-  // Throttled tick processing - 버퍼의 모든 틱을 한 번에 처리
+  // Throttled tick processing - uses requestAnimationFrame for smoother rendering
   useEffect(() => {
-    throttleIntervalRef.current = setInterval(() => {
-      const buffer = tickBufferRef.current;
-      if (buffer.length === 0) return;
+    let rafId: number | null = null;
+    let lastProcessTime = 0;
 
-      // 버퍼의 모든 틱을 순서대로 처리
-      for (const tick of buffer) {
-        processTickRef.current(tick);
+    const processBuffer = (timestamp: number) => {
+      // Only process if enough time has passed (throttle)
+      if (timestamp - lastProcessTime >= THROTTLE_MS) {
+        const buffer = tickBufferRef.current;
+        if (buffer.length > 0) {
+          // Process all buffered ticks
+          for (const tick of buffer) {
+            processTickRef.current(tick);
+          }
+          // Clear buffer
+          tickBufferRef.current = [];
+        }
+        lastProcessTime = timestamp;
       }
 
-      // 버퍼 비우기
-      tickBufferRef.current = [];
-    }, THROTTLE_MS);
+      // Schedule next frame
+      rafId = requestAnimationFrame(processBuffer);
+    };
+
+    // Start the loop
+    rafId = requestAnimationFrame(processBuffer);
 
     return () => {
-      if (throttleIntervalRef.current) {
-        clearInterval(throttleIntervalRef.current);
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
       }
     };
   }, []);
@@ -728,7 +829,15 @@ const FootprintPage: React.FC = () => {
       wsRef.current = ws;
 
       return () => {
-        ws.close();
+        // Properly cleanup WebSocket to prevent memory leaks
+        if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+          ws.close();
+        }
+        // Clear event handlers to prevent memory leaks
+        ws.onmessage = null;
+        ws.onerror = null;
+        ws.onclose = null;
+        ws.onopen = null;
         wsRef.current = null;
         setConnected(false); // 연결 해제 시 Context 업데이트
       };
@@ -738,43 +847,193 @@ const FootprintPage: React.FC = () => {
     }
   }, [dataSource, setConnected]); // processTick 제거: 재연결 방지
 
-  // --- Mock/Raw Data Tick Loop ---
-  useEffect(() => {
-    // Skip if using WebSocket
-    if (dataSource === 'websocket') {
-      return;
-    }
+  // --- Simulation Control Handlers ---
+  const handleSimPlay = useCallback(() => {
+    setSimIsPlaying(true);
+  }, []);
 
-    // Raw Data Mode: 파일이 로드되지 않았으면 시작하지 않음
-    if (dataSource === 'raw' && rawTicksRef.current.length === 0) {
-      console.log('⏸️ Raw data not loaded yet, waiting...');
-      return;
-    }
+  const handleSimPause = useCallback(() => {
+    setSimIsPlaying(false);
+  }, []);
 
-    console.log(`▶️ Starting ${dataSource} playback, ticks: ${rawTicksRef.current.length}, index: ${rawTickIndexRef.current}`);
+  const handleSimSeek = useCallback((targetTime: number) => {
+    // Clamp to valid range
+    const clampedTime = Math.max(simStartTime, Math.min(simEndTime, targetTime));
 
-    const interval = setInterval(() => {
-      let newTick: Tick;
+    // Find the tick index for this time using binary search
+    const ticks = rawTicksRef.current;
+    if (ticks.length === 0) return;
 
-      // Select data source
-      if (dataSource === 'raw') {
-        // Raw Data Mode: Sequential playback
-        if (rawTickIndexRef.current >= rawTicksRef.current.length) {
-          console.log('⏹️ Raw data playback finished');
-          clearInterval(interval);
-          return;
-        }
-        newTick = rawTicksRef.current[rawTickIndexRef.current++];
+    let left = 0;
+    let right = ticks.length - 1;
+
+    while (left < right) {
+      const mid = Math.floor((left + right) / 2);
+      if (ticks[mid].timestamp < clampedTime) {
+        left = mid + 1;
       } else {
-        // Mock Data Mode: Generate random tick
-        newTick = generateTick();
+        right = mid;
+      }
+    }
+
+    // Reset chart state
+    setTicks([]);
+    setHistoryBars([]);
+    allTicksHistory.current = [];
+    activeBarMap.current = new Map();
+    barIdCounter.current = 1;
+
+    // Process all ticks up to the target index
+    const ticksToProcess = ticks.slice(0, left);
+    if (ticksToProcess.length > 0) {
+      // Bulk recalculate bars
+      allTicksHistory.current = ticksToProcess;
+      recalculateBars(rotationModeRef.current, thresholdsRef.current[rotationModeRef.current], priceGroupingRef.current);
+
+      // Update tick list with recent ticks
+      setTicks(ticksToProcess.slice(-200).reverse());
+
+      // Update current price
+      const lastTick = ticksToProcess[ticksToProcess.length - 1];
+      setCurrentPrice(lastTick.price);
+    } else {
+      // Reset to initial state
+      const firstTick = ticks[0];
+      setCurrentPrice(firstTick.price);
+      setActiveBarStats({
+        id: barIdCounter.current++,
+        startTime: new Date(firstTick.timestamp).toTimeString().split(' ')[0],
+        timestamp: firstTick.timestamp,
+        open: firstTick.price,
+        high: firstTick.price,
+        low: firstTick.price,
+        totalVolume: 0,
+        currentDelta: 0,
+        maxDelta: 0,
+        minDelta: 0
+      });
+    }
+
+    // ref도 함께 업데이트
+    simProcessedIdxRef.current = left;
+    simLastSimTimeRef.current = clampedTime;
+    simLastRealTimeRef.current = Date.now();
+
+    setSimCurrentTickIdx(left);
+    setSimCurrentTime(clampedTime);
+  }, [simStartTime, simEndTime]);
+
+  const handleSimSpeedChange = useCallback((speed: PlaybackSpeed) => {
+    setSimSpeed(speed);
+  }, []);
+
+  const handleSimSkipBack = useCallback(() => {
+    handleSimSeek(simStartTime);
+    setSimIsPlaying(false);
+  }, [simStartTime, handleSimSeek]);
+
+  const handleSimSkipForward = useCallback(() => {
+    handleSimSeek(simEndTime);
+    setSimIsPlaying(false);
+  }, [simEndTime, handleSimSeek]);
+
+  // --- Raw Data Simulation Timer (시간 기반 + 10fps 고정 렌더링) ---
+  useEffect(() => {
+    if (dataSource !== 'raw' || !simIsPlaying) {
+      if (simTimerRef.current) {
+        clearInterval(simTimerRef.current);
+        simTimerRef.current = null;
+      }
+      return;
+    }
+
+    const ticks = rawTicksRef.current;
+    if (ticks.length === 0) return;
+
+    // 고정 렌더링 간격: 100ms = 10fps (배속과 무관)
+    const RENDER_INTERVAL_MS = 100;
+
+    // 시뮬레이션 시작 시 기준 시간 설정
+    const realStartTime = Date.now();
+    const simStartTimeLocal = simCurrentTime || simStartTime;
+
+    // ref 초기화
+    simLastRealTimeRef.current = realStartTime;
+    simLastSimTimeRef.current = simStartTimeLocal;
+
+    // 현재 시뮬레이션 시간에 해당하는 틱 인덱스 찾기
+    let currentIdx = simProcessedIdxRef.current;
+
+    // 성능 로깅용
+    let tickCounter = 0;
+    let lastLogTime = Date.now();
+
+    simTimerRef.current = setInterval(() => {
+      const now = Date.now();
+      const realElapsed = now - simLastRealTimeRef.current;
+
+      // 시뮬레이션 시간 계산 (실제 경과 시간 × 배속)
+      const simElapsed = realElapsed * simSpeed;
+      const newSimTime = simLastSimTimeRef.current + simElapsed;
+
+      // 종료 체크
+      if (newSimTime >= simEndTime || currentIdx >= ticks.length) {
+        setSimIsPlaying(false);
+        setSimCurrentTime(simEndTime);
+        console.log('⏹️ Simulation finished');
+        return;
       }
 
+      // 현재 시뮬레이션 시간까지의 모든 틱 처리 (버퍼링)
+      let processedCount = 0;
+      while (currentIdx < ticks.length && ticks[currentIdx].timestamp <= newSimTime) {
+        processTick(ticks[currentIdx]);
+        currentIdx++;
+        processedCount++;
+        tickCounter++;
+      }
+
+      // 상태 업데이트 (렌더링 트리거)
+      simProcessedIdxRef.current = currentIdx;
+      setSimCurrentTickIdx(currentIdx);
+      setSimCurrentTime(newSimTime);
+
+      // 다음 프레임을 위한 기준 시간 갱신
+      simLastRealTimeRef.current = now;
+      simLastSimTimeRef.current = newSimTime;
+
+      // 성능 로깅 (1초마다)
+      if (now - lastLogTime >= 1000) {
+        console.log(`📊 Ticks processed: ${tickCounter}/sec, Renders: 10fps, Speed: ${simSpeed}x`);
+        tickCounter = 0;
+        lastLogTime = now;
+      }
+    }, RENDER_INTERVAL_MS);
+
+    return () => {
+      if (simTimerRef.current) {
+        clearInterval(simTimerRef.current);
+        simTimerRef.current = null;
+      }
+    };
+  }, [dataSource, simIsPlaying, simSpeed, processTick, simStartTime, simEndTime]);
+
+  // --- Mock Data Tick Loop ---
+  useEffect(() => {
+    // Only for mock mode
+    if (dataSource !== 'mock') {
+      return;
+    }
+
+    console.log(`▶️ Starting mock data playback`);
+
+    const interval = setInterval(() => {
+      const newTick = generateTick();
       processTick(newTick);
-    }, dataSource === 'raw' ? 100 : CONFIG.TICK_RATE_MS); // 100ms for Raw Data, 200ms for Mock Data
+    }, CONFIG.TICK_RATE_MS);
 
     return () => clearInterval(interval);
-  }, [dataSource, processTick, rawDataFileName]); // Re-bind when data source, processTick, or file changes
+  }, [dataSource, processTick]);
 
   const activeBarCandle: FootprintCandle | null = useMemo(() => {
       if (activeBarStats.totalVolume === 0 && activeBarMap.current.size === 0) return null;
@@ -849,6 +1108,48 @@ const FootprintPage: React.FC = () => {
     // Return new array with active bar appended (shallow copy of history)
     return [...historyData, activeBarCvd];
   }, [historyCvdData, historyBars.length, activeBarStats.currentDelta, activeBarStats.maxDelta, activeBarStats.minDelta, activeBarStats.totalVolume]);
+
+  // Handle scroll sync between FootprintTable and CVDChart
+  const handleFootprintScroll = useCallback((visibleBarIndex: number) => {
+    if (cvdChartRef.current) {
+      cvdChartRef.current.scrollToBar(visibleBarIndex);
+    }
+  }, []);
+
+  // Handle CVD chart resize
+  const handleResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    isResizingRef.current = true;
+    resizeStartYRef.current = e.clientY;
+    resizeStartHeightRef.current = cvdHeight;
+    document.body.style.cursor = 'ns-resize';
+    document.body.style.userSelect = 'none';
+  }, [cvdHeight]);
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isResizingRef.current) return;
+      const deltaY = resizeStartYRef.current - e.clientY;
+      const newHeight = Math.max(60, Math.min(400, resizeStartHeightRef.current + deltaY));
+      setCvdHeight(newHeight);
+    };
+
+    const handleMouseUp = () => {
+      if (isResizingRef.current) {
+        isResizingRef.current = false;
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+      }
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, []);
 
   const handleThresholdChange = (e: React.ChangeEvent<HTMLInputElement>) => {
       setTempInput(e.target.value);
@@ -945,6 +1246,29 @@ const FootprintPage: React.FC = () => {
                         </select>
                         <span className="text-gray-500 text-[9px]">원</span>
                     </div>
+
+                    <div className="h-4 w-px bg-gray-700"></div>
+
+                    {/* Zoom Controls */}
+                    <div className="flex items-center space-x-1 text-[10px]">
+                        <button
+                            onClick={handleZoomOut}
+                            disabled={zoomLevel === ZOOM_LEVELS[0]}
+                            className="p-1 rounded bg-gray-800 border border-gray-600 hover:bg-gray-700 disabled:opacity-30 disabled:cursor-not-allowed"
+                            title="Zoom Out"
+                        >
+                            <ZoomOut className="w-3 h-3 text-gray-300" />
+                        </button>
+                        <span className="text-gray-300 font-mono w-10 text-center">{zoomLevel}%</span>
+                        <button
+                            onClick={handleZoomIn}
+                            disabled={zoomLevel === ZOOM_LEVELS[ZOOM_LEVELS.length - 1]}
+                            className="p-1 rounded bg-gray-800 border border-gray-600 hover:bg-gray-700 disabled:opacity-30 disabled:cursor-not-allowed"
+                            title="Zoom In"
+                        >
+                            <ZoomIn className="w-3 h-3 text-gray-300" />
+                        </button>
+                    </div>
                 </div>
 
                 <div className="flex space-x-2 items-center">
@@ -958,6 +1282,12 @@ const FootprintPage: React.FC = () => {
                                 rawTicksRef.current = [];
                                 rawTickIndexRef.current = 0;
                                 setRawDataFileName(null);
+                                setSimDataLoaded(false);
+                                setSimIsPlaying(false);
+                            } else {
+                                // Reset simulation state when switching away from raw mode
+                                setSimDataLoaded(false);
+                                setSimIsPlaying(false);
                             }
                         }}
                         className="text-[10px] px-3 py-1 rounded font-semibold transition-colors border bg-gray-700 text-gray-300 hover:bg-gray-600 border-gray-600 cursor-pointer"
@@ -993,13 +1323,49 @@ const FootprintPage: React.FC = () => {
                     globalHigh={globalHigh}
                     globalLow={globalLow}
                     priceStep={priceGrouping}
+                    zoomLevel={zoomLevel}
+                    onScrollChange={handleFootprintScroll}
                 />
+            </div>
+
+            {/* Resize Handle */}
+            <div
+              className="h-2 bg-gray-800 hover:bg-highlight cursor-ns-resize flex items-center justify-center shrink-0 transition-colors border-y border-gray-700"
+              onMouseDown={handleResizeStart}
+            >
+              <div className="w-10 h-0.5 bg-gray-600 rounded-full"></div>
             </div>
 
             {/* CVD Chart - Below FootprintTable */}
             <div className="shrink-0">
-                <CVDChart data={cvdData} height={120} />
+                <CVDChart
+                  ref={cvdChartRef}
+                  data={cvdData}
+                  height={cvdHeight}
+                  barWidth={Math.round(BAR_WIDTH * (zoomLevel / 100) * (zoomLevel >= 75 ? 1 : 0.6))}
+                />
             </div>
+
+            {/* Simulation Controls - Only for Raw Data Mode */}
+            {dataSource === 'raw' && simDataLoaded && (
+              <div className="shrink-0 mt-1">
+                <SimulationControls
+                  isPlaying={simIsPlaying}
+                  currentTime={simCurrentTime}
+                  startTime={simStartTime}
+                  endTime={simEndTime}
+                  speed={simSpeed}
+                  onPlay={handleSimPlay}
+                  onPause={handleSimPause}
+                  onSeek={handleSimSeek}
+                  onSpeedChange={handleSimSpeedChange}
+                  onSkipBack={handleSimSkipBack}
+                  onSkipForward={handleSimSkipForward}
+                  tickCount={rawTicksRef.current.length}
+                  currentTickIndex={simCurrentTickIdx}
+                />
+              </div>
+            )}
         </div>
 
         {/* Right Panel: Tick List */}

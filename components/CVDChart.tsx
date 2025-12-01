@@ -5,6 +5,7 @@ import { CVDCandle } from '../types';
 interface CVDChartProps {
   data: CVDCandle[];
   height?: number;
+  barWidth?: number; // Width of each candle to match footprint bar width
 }
 
 export interface CVDChartHandle {
@@ -12,7 +13,7 @@ export interface CVDChartHandle {
   getVisibleRange: () => { from: number; to: number } | null;
 }
 
-const CVDChart = forwardRef<CVDChartHandle, CVDChartProps>(({ data, height = 150 }, ref) => {
+const CVDChart = forwardRef<CVDChartHandle, CVDChartProps>(({ data, height = 150, barWidth = 130 }, ref) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
@@ -23,7 +24,10 @@ const CVDChart = forwardRef<CVDChartHandle, CVDChartProps>(({ data, height = 150
     scrollToBar: (index: number) => {
       if (chartRef.current && data.length > 0) {
         const timeScale = chartRef.current.timeScale();
-        timeScale.scrollToPosition(-data.length + index + 10, false);
+        // scrollToPosition uses offset from right edge (negative = scroll left)
+        // index 0 = rightmost bar (newest), so we scroll to show that bar at the right
+        const position = -index;
+        timeScale.scrollToPosition(position, false);
       }
     },
     getVisibleRange: () => {
@@ -84,7 +88,14 @@ const CVDChart = forwardRef<CVDChartHandle, CVDChartProps>(({ data, height = 150
           borderColor: '#3d3d5c',
           timeVisible: false,
           tickMarkFormatter: (time: Time) => String(time),
+          barSpacing: barWidth,
+          minBarSpacing: barWidth,
+          fixLeftEdge: false,
+          fixRightEdge: true,
         },
+        // Disable mouse wheel zoom to keep fixed bar width
+        handleScale: false,
+        handleScroll: true,
       });
 
       // v5 API: use addSeries with CandlestickSeries type
@@ -99,6 +110,7 @@ const CVDChart = forwardRef<CVDChartHandle, CVDChartProps>(({ data, height = 150
 
       chartRef.current = chart;
       seriesRef.current = candleSeries;
+      prevDataLengthRef.current = 0; // Reset to force data reload
       setIsReady(true);
     };
 
@@ -108,8 +120,20 @@ const CVDChart = forwardRef<CVDChartHandle, CVDChartProps>(({ data, height = 150
     // Handle resize with ResizeObserver
     const resizeObserver = new ResizeObserver((entries) => {
       for (const entry of entries) {
-        if (chartRef.current && entry.contentRect.width > 0) {
+        if (chartRef.current && seriesRef.current && entry.contentRect.width > 0) {
           chartRef.current.applyOptions({ width: entry.contentRect.width });
+
+          // Re-apply data after resize to prevent candles from disappearing
+          if (dataRef.current.length > 0) {
+            const chartData: CandlestickData<Time>[] = dataRef.current.map((candle) => ({
+              time: candle.time as Time,
+              open: candle.open,
+              high: candle.high,
+              low: candle.low,
+              close: candle.close,
+            }));
+            seriesRef.current.setData(chartData);
+          }
         }
       }
     });
@@ -124,10 +148,16 @@ const CVDChart = forwardRef<CVDChartHandle, CVDChartProps>(({ data, height = 150
         seriesRef.current = null;
       }
     };
-  }, [height]);
+  }, [height, barWidth]);
 
   // Track previous data length for incremental updates
   const prevDataLengthRef = useRef(0);
+
+  // Store data ref for resize handler
+  const dataRef = useRef<CVDCandle[]>(data);
+  useEffect(() => {
+    dataRef.current = data;
+  }, [data]);
 
   // Update data when it changes - use incremental update when possible
   useEffect(() => {
@@ -181,10 +211,14 @@ const CVDChart = forwardRef<CVDChartHandle, CVDChartProps>(({ data, height = 150
           {data.length > 0 ? `Latest: ${data[data.length - 1].close.toLocaleString()}` : 'No data'}
         </span>
       </div>
-      <div
-        ref={containerRef}
-        style={{ height: `${height}px`, width: '100%' }}
-      />
+      <div className="flex">
+        {/* Left spacer to align with FootprintTable's price column (70px) */}
+        <div className="w-[70px] shrink-0 bg-panel-bg border-r border-border-color" style={{ height: `${height}px` }} />
+        <div
+          ref={containerRef}
+          style={{ height: `${height}px`, flex: 1 }}
+        />
+      </div>
     </div>
   );
 });

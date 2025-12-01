@@ -11,7 +11,7 @@ interface HeaderProps {
   onSettingsClick: () => void;
 }
 
-const Header: React.FC<HeaderProps> = ({ stats, targetCode, targetName, onSettingsClick }) => {
+const Header: React.FC<HeaderProps> = React.memo(({ stats, targetCode, targetName, onSettingsClick }) => {
   const { isConnected, todayEventCount } = useWebSocket();
 
   return (
@@ -87,6 +87,8 @@ const Header: React.FC<HeaderProps> = ({ stats, targetCode, targetName, onSettin
       </div>
     </div>
   );
-};
+});
+
+Header.displayName = 'Header';
 
 export default Header;
