@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { TrendingUp, TrendingDown, RefreshCw, Activity, BarChart3, Target, GitBranch } from 'lucide-react';
+import { TrendingUp, TrendingDown, RefreshCw, Activity, BarChart3, Target, GitBranch, Clock, AlertTriangle, Zap } from 'lucide-react';
 import { LiveResearchResponse, ResearchEvent, ResearchSummary, StockSummary, DivergenceAnalysisResponse } from '../../types/research';
 import LoadingSpinner from '../ui/LoadingSpinner';
 import ErrorMessage from '../ui/ErrorMessage';
@@ -308,6 +308,8 @@ const EventList: React.FC<{
     <div className="flex-1 overflow-y-auto">
       {events.map((event) => {
         const isBuySurge = event.event_type === 'buy_surge';
+        const hasDivergence = event.divergence_type && event.divergence_type !== 'none';
+        const hasOrderSignal = event.order_book_signal && event.order_book_signal !== '없음';
 
         return (
           <div
@@ -326,6 +328,13 @@ const EventList: React.FC<{
                   <span className="text-[10px] text-gray-500 ml-2">
                     {event.event_time.split(' ')[1]}
                   </span>
+                  {/* v2.0: 시간대 표시 */}
+                  {event.time_session && event.time_session !== '정규' && (
+                    <span className="text-[9px] text-yellow-500 ml-1 flex items-center inline-flex">
+                      <Clock className="w-2.5 h-2.5 mr-0.5" />
+                      {event.time_session}
+                    </span>
+                  )}
                 </div>
               </div>
               <div className="text-right">
@@ -338,9 +347,44 @@ const EventList: React.FC<{
                 <div className="text-[10px] text-gray-500">1분</div>
               </div>
             </div>
-            <div className="mt-0.5 flex items-center space-x-3 text-[10px] text-gray-400">
-              <span>Delta: {event.delta_vol.toLocaleString()}</span>
-              <span>가격: {event.price_at_event.toLocaleString()}원</span>
+            {/* 상세 정보 행 */}
+            <div className="mt-0.5 flex items-center justify-between text-[10px]">
+              <div className="flex items-center space-x-3 text-gray-400">
+                <span>Delta: {event.delta_vol.toLocaleString()}</span>
+                <span>가격: {event.price_at_event.toLocaleString()}원</span>
+                {/* v2.0: 동적 임계값 표시 */}
+                {event.threshold_type === 'dynamic' && event.threshold_used && (
+                  <span className="text-cyan-400">
+                    임계: {(event.threshold_used / 1000000).toFixed(0)}M
+                  </span>
+                )}
+              </div>
+              {/* v2.0: 배지들 */}
+              <div className="flex items-center space-x-1">
+                {/* 다이버전스 배지 */}
+                {hasDivergence && (
+                  <span className={`px-1.5 py-0.5 rounded text-[9px] font-medium ${
+                    event.divergence_type === 'bullish'
+                      ? 'bg-green-500/20 text-green-400'
+                      : 'bg-red-500/20 text-red-400'
+                  }`}>
+                    {event.divergence_type === 'bullish' ? '📈강세' : '📉약세'}
+                  </span>
+                )}
+                {/* 호가잔량 신호 배지 */}
+                {hasOrderSignal && (
+                  <span className="px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-400 text-[9px] font-medium flex items-center">
+                    <Zap className="w-2.5 h-2.5 mr-0.5" />
+                    호가
+                  </span>
+                )}
+                {/* 노이즈 시간대 경고 */}
+                {event.is_noisy_time && (
+                  <span className="text-yellow-500" title="노이즈 시간대">
+                    <AlertTriangle className="w-3 h-3" />
+                  </span>
+                )}
+              </div>
             </div>
           </div>
         );

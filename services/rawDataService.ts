@@ -122,6 +122,19 @@ export async function loadRawData(): Promise<Tick[]> {
 }
 
 /**
+ * Extract stock code from raw data filename
+ * Expected format: raw_data_XXXXXX_YYYYMMDD.txt where XXXXXX is the stock code
+ */
+export function extractStockCodeFromFilename(filename: string): string | null {
+  // Pattern: raw_data_000000_YYYYMMDD.txt
+  const match = filename.match(/raw_data_(\d{6})_\d{8}\.txt/i);
+  if (match && match[1]) {
+    return match[1];
+  }
+  return null;
+}
+
+/**
  * Parse raw data from a File object (user-selected file)
  */
 export async function parseRawDataFile(file: File): Promise<Tick[]> {

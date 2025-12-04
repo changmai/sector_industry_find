@@ -38,6 +38,15 @@ class ProgramEvent:
     price_high_5m: Optional[int] = None  # 5분간 최고가
     price_low_5m: Optional[int] = None  # 5분간 최저가
     divergence_type: Optional[str] = None  # 다이버전스: 'bullish', 'bearish', 'none'
+    # v2.0 추가 필드
+    time_session: Optional[str] = None  # 시간대: '장초반', '장후반', '정규'
+    is_noisy_time: bool = False  # 노이즈 시간대 여부
+    threshold_used: Optional[int] = None  # 적용된 임계값
+    threshold_type: Optional[str] = None  # 임계값 유형: 'dynamic', 'fixed'
+    # 호가잔량 분석
+    buy_intensity: Optional[float] = None  # 매수 체결강도
+    sell_intensity: Optional[float] = None  # 매도 체결강도
+    order_book_signal: Optional[str] = None  # 호가잔량 신호 설명
 
 
 @dataclass
@@ -147,12 +156,13 @@ class ResearchDB:
         await loop.run_in_executor(self._executor, self._migrate_add_trend_columns_sync)
 
     def _migrate_add_trend_columns_sync(self):
-        """동기 마이그레이션: 추세 컬럼 추가"""
+        """동기 마이그레이션: 추세 컬럼 및 v2.0 컬럼 추가"""
         conn = self._get_connection()
         cursor = conn.cursor()
 
-        # 추가할 컬럼 목록
+        # 추가할 컬럼 목록 (v1.0 + v2.0)
         new_columns = [
+            # v1.0 추세 정보
             ("price_1m_ago", "INTEGER"),
             ("price_3m_ago", "INTEGER"),
             ("price_5m_ago", "INTEGER"),
@@ -163,6 +173,14 @@ class ResearchDB:
             ("price_high_5m", "INTEGER"),
             ("price_low_5m", "INTEGER"),
             ("divergence_type", "TEXT"),
+            # v2.0 시간대/임계값/호가잔량
+            ("time_session", "TEXT"),
+            ("is_noisy_time", "INTEGER"),  # SQLite는 BOOLEAN 없음
+            ("threshold_used", "INTEGER"),
+            ("threshold_type", "TEXT"),
+            ("buy_intensity", "REAL"),
+            ("sell_intensity", "REAL"),
+            ("order_book_signal", "TEXT"),
         ]
 
         # 기존 컬럼 확인
@@ -204,8 +222,10 @@ class ResearchDB:
              bshrem, bdhrem, bshvolume, bdhvolume, tval, delta_vol,
              price_1m_ago, price_3m_ago, price_5m_ago,
              price_change_1m, price_change_3m, price_change_5m,
-             price_trend_5m, price_high_5m, price_low_5m, divergence_type)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             price_trend_5m, price_high_5m, price_low_5m, divergence_type,
+             time_session, is_noisy_time, threshold_used, threshold_type,
+             buy_intensity, sell_intensity, order_book_signal)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             event.event_time, event.code, event.event_type, event.trigger_value,
             event.price_at_event, event.bshrem, event.bdhrem, event.bshvolume,
@@ -213,7 +233,11 @@ class ResearchDB:
             event.price_1m_ago, event.price_3m_ago, event.price_5m_ago,
             event.price_change_1m, event.price_change_3m, event.price_change_5m,
             event.price_trend_5m, event.price_high_5m, event.price_low_5m,
-            event.divergence_type
+            event.divergence_type,
+            # v2.0 추가 필드
+            event.time_session, 1 if event.is_noisy_time else 0,
+            event.threshold_used, event.threshold_type,
+            event.buy_intensity, event.sell_intensity, event.order_book_signal
         ))
 
         conn.commit()
@@ -621,6 +645,8 @@ class ResearchDB:
 
         results = []
         for row in cursor.fetchall():
+            # v2.0 필드 안전하게 추출 (없을 수 있음)
+            row_dict = dict(row)
             results.append({
                 'id': row['id'],
                 'event_time': row['event_time'],
@@ -637,7 +663,16 @@ class ResearchDB:
                 'return_1m': row['return_1m'],
                 'return_5m': row['return_5m'],
                 'return_10m': row['return_10m'],
-                'return_30m': row['return_30m']
+                'return_30m': row['return_30m'],
+                # v2.0 추가 필드
+                'divergence_type': row_dict.get('divergence_type'),
+                'time_session': row_dict.get('time_session'),
+                'is_noisy_time': bool(row_dict.get('is_noisy_time', 0)),
+                'threshold_used': row_dict.get('threshold_used'),
+                'threshold_type': row_dict.get('threshold_type'),
+                'buy_intensity': row_dict.get('buy_intensity'),
+                'sell_intensity': row_dict.get('sell_intensity'),
+                'order_book_signal': row_dict.get('order_book_signal'),
             })
         return results
 

@@ -50,6 +50,35 @@ backtester: Backtester = None  # 백테스터
 stock_names_cache: dict = {}  # 종목명 캐시
 
 
+def load_stock_names_from_file() -> dict:
+    """ls_stock_list.json 파일에서 종목명 로드 (API 호출 없이 즉시 조회 가능)"""
+    possible_paths = [
+        "ls_stock_list.json",
+        "backend/ls_stock_list.json",
+        os.path.join(os.path.dirname(__file__), "ls_stock_list.json")
+    ]
+
+    for path in possible_paths:
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    stock_list = json.load(f)
+                    # 단축코드 -> 종목명 매핑
+                    stock_names = {}
+                    for stock in stock_list:
+                        code = stock.get("단축코드", "")
+                        name = stock.get("종목명", "")
+                        if code and name:
+                            stock_names[code] = name
+                    print(f"✅ 종목명 로드 완료: {len(stock_names)}개 종목 (from {path})")
+                    return stock_names
+            except Exception as e:
+                print(f"⚠️ 종목명 파일 로드 실패 ({path}): {e}")
+
+    print("⚠️ ls_stock_list.json 파일을 찾을 수 없습니다. API 호출로 대체됩니다.")
+    return {}
+
+
 def load_watchlist() -> list:
     """watchlist.json 파일에서 관심종목 리스트 로드"""
     # 여러 경로 시도
@@ -79,13 +108,16 @@ def load_watchlist() -> list:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """FastAPI Lifespan Event: 서버 시작/종료 시 실행"""
-    global ls_client, watchlist_codes
+    global ls_client, watchlist_codes, stock_names_cache
     global research_db, event_detector, price_tracker, report_generator, backtester
 
     # ========== STARTUP ==========
     print("\n" + "="*60)
     print("🚀 SERVER STARTUP - Initializing LS WebSocket...")
     print("="*60)
+
+    # 0. 종목명 파일에서 로드 (API 호출 절약)
+    stock_names_cache = load_stock_names_from_file()
 
     # 1. 관심종목 로드
     watchlist_codes = load_watchlist()
@@ -141,7 +173,7 @@ async def lifespan(app: FastAPI):
             connected_clients.discard(client)
 
     async def on_program_data(code: str, body: dict):
-        """UPH 프로그램 매매 데이터 처리 - 이벤트 감지 및 기록"""
+        """UPH 프로그램 매매 데이터 처리 - 이벤트 감지 및 기록 (v2.0)"""
         # 이벤트 감지
         result = event_detector.detect(code, body)
 
@@ -153,13 +185,53 @@ async def lifespan(app: FastAPI):
             trend_info = result.details.get('trend_info', {})
             divergence_type = result.details.get('divergence_type')
 
-            print(f"\n🎯 [EVENT] {event_time} | {code} | {result.event_type}")
-            print(f"   Delta: {result.delta_vol:,}주 | Value: {result.estimated_value:,.0f}원 | Price: {result.current_price:,}원")
-            if divergence_type:
-                trend_5m = trend_info.get('price_trend_5m', '?')
-                print(f"   📊 Divergence: {divergence_type} (5분 추세: {trend_5m})")
+            # v2.0 추가 정보 추출
+            time_session = result.details.get('time_session', '정규')
+            is_noisy_time = result.details.get('is_noisy_time', False)
+            threshold_used = result.details.get('threshold_value', 0)
+            threshold_type = result.details.get('threshold_type', 'fixed')
+            order_book = result.details.get('order_book', {})
 
-            # DB에 이벤트 기록 (추세 정보 포함)
+            # 종목명 조회
+            stock_name = stock_names_cache.get(code, code)
+
+            # 이벤트 유형 아이콘
+            event_icon = "🟢" if result.event_type == 'buy_surge' else "🔴"
+            event_label = "매수급증" if result.event_type == 'buy_surge' else "매도급증"
+
+            # 로그 출력 (v2.0 상세 정보 포함)
+            print(f"\n{'='*60}")
+            print(f"{event_icon} [EVENT] {event_time} | {code} {stock_name} | {event_label}")
+            print(f"   💰 Delta: {result.delta_vol:,}주 | Value: {result.estimated_value:,.0f}원 | Price: {result.current_price:,}원")
+            print(f"   ⚙️  임계값: {threshold_used:,}원 ({threshold_type}) | 시간대: {time_session}{'⚠️' if is_noisy_time else ''}")
+
+            # 다이버전스 정보
+            if divergence_type and divergence_type != 'none':
+                trend_5m = trend_info.get('price_trend_5m', '?')
+                change_5m = trend_info.get('price_change_5m')
+                change_str = f"{change_5m:+.2f}%" if change_5m else "?"
+                div_icon = "📈" if divergence_type == 'bullish' else "📉"
+                print(f"   {div_icon} 다이버전스: {divergence_type} (5분 추세: {trend_5m}, {change_str})")
+
+            # 호가잔량 신호
+            order_signal = order_book.get('signal_description', '없음')
+            if order_signal and order_signal != '없음':
+                print(f"   📊 호가잔량: {order_signal}")
+
+            # 체결강도
+            buy_intensity = order_book.get('buy_intensity')
+            sell_intensity = order_book.get('sell_intensity')
+            if buy_intensity or sell_intensity:
+                intensity_str = []
+                if buy_intensity:
+                    intensity_str.append(f"매수강도:{buy_intensity:.2f}")
+                if sell_intensity:
+                    intensity_str.append(f"매도강도:{sell_intensity:.2f}")
+                print(f"   📈 체결강도: {' | '.join(intensity_str)}")
+
+            print(f"{'='*60}")
+
+            # DB에 이벤트 기록 (v2.0 정보 포함)
             event = ProgramEvent(
                 event_time=event_time,
                 code=code,
@@ -182,7 +254,15 @@ async def lifespan(app: FastAPI):
                 price_trend_5m=trend_info.get('price_trend_5m'),
                 price_high_5m=trend_info.get('price_high_5m'),
                 price_low_5m=trend_info.get('price_low_5m'),
-                divergence_type=divergence_type
+                divergence_type=divergence_type,
+                # v2.0 추가 필드
+                time_session=time_session,
+                is_noisy_time=is_noisy_time,
+                threshold_used=threshold_used,
+                threshold_type=threshold_type,
+                buy_intensity=buy_intensity,
+                sell_intensity=sell_intensity,
+                order_book_signal=order_signal
             )
 
             try:
@@ -432,12 +512,39 @@ async def subscribe_to_stock(code: str):
         }
 
 
+@app.get("/api/watchlist")
+async def get_watchlist_with_names():
+    """
+    구독 중인 종목 목록과 종목명 반환
+    ls_stock_list.json에서 로드된 캐시 사용 (API 호출 없음)
+    """
+    items = []
+    for code in watchlist_codes:
+        items.append({
+            "code": code,
+            "name": stock_names_cache.get(code, code)  # 캐시에 없으면 코드 반환
+        })
+    return {
+        "status": "success",
+        "count": len(items),
+        "items": items
+    }
+
+
 @app.get("/api/stock/{code}")
 async def get_stock_info(code: str):
     """
     LS증권 t1102 TR을 사용하여 종목 정보 조회
     """
     try:
+        # 캐시에 있으면 바로 반환 (API 호출 절약)
+        if code in stock_names_cache:
+            return {
+                "code": code,
+                "name": stock_names_cache[code],
+                "status": "cached"
+            }
+
         # 토큰 발급
         token = get_access_token()
 
@@ -464,6 +571,11 @@ async def get_stock_info(code: str):
             json=data
         )
 
+        # Rate Limit 헤더 확인 (있는 경우 로깅)
+        rate_limit_headers = {k: v for k, v in resp.headers.items() if 'limit' in k.lower() or 'rate' in k.lower() or 'retry' in k.lower()}
+        if rate_limit_headers:
+            print(f"[RATE-LIMIT] {code}: {rate_limit_headers}")
+
         if resp.status_code == 200:
             result = resp.json()
             # t1102 응답에서 종목명 추출
@@ -480,6 +592,8 @@ async def get_stock_info(code: str):
             else:
                 raise HTTPException(status_code=404, detail="Stock not found")
         else:
+            # 에러 시 상세 정보 로깅
+            print(f"[ERROR] API failed for {code}: status={resp.status_code}, headers={dict(resp.headers)}, body={resp.text[:500]}")
             raise HTTPException(status_code=resp.status_code, detail=f"API error: {resp.text}")
 
     except HTTPException:

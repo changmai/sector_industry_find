@@ -14,7 +14,7 @@ const OVERSCAN = 5;
 const TickRow = React.memo(({ tick, style }: { tick: Tick; style: React.CSSProperties }) => (
   <div
     style={style}
-    className="tick-row grid grid-cols-[50px_60px_26px_52px] gap-1 text-[10px] px-1 border-b border-gray-800/30 hover:bg-gray-800/50 font-mono leading-none items-center"
+    className="tick-row grid grid-cols-[30px_60px_24px_60px] gap-1 text-[10px] px-1 border-b border-gray-800/30 hover:bg-gray-800/50 font-mono leading-none items-center"
   >
     <div className="text-gray-500 text-center tracking-tighter">{tick.time}</div>
     <div className={`text-right font-bold tracking-tight ${tick.side === Side.Buy ? COLORS.BUY_TEXT : COLORS.SELL_TEXT}`}>
@@ -108,7 +108,7 @@ const TickList: React.FC<TickListProps> = React.memo(({ ticks }) => {
       </div>
 
       {/* Header */}
-      <div className="grid grid-cols-[50px_60px_26px_52px] gap-1 text-[9px] text-gray-500 px-1 py-0.5 border-b border-border-color items-center">
+      <div className="grid grid-cols-[30px_60px_24px_60px] gap-1 text-[9px] text-gray-500 px-1 py-0.5 border-b border-border-color items-center">
         <div className="text-center">Time</div>
         <div className="text-right">Price</div>
         <div className="text-center">Sd</div>

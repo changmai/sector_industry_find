@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { fetchStockInfo, subscribeToStock, fetchWatchlist } from '../services/websocketDataService';
+import { fetchStockInfo, subscribeToStock, fetchWatchlistWithNames } from '../services/websocketDataService';
 import './StockCodeChangeDialog.css';
 
 interface StockCodeChangeDialogProps {
@@ -49,28 +49,18 @@ const StockCodeChangeDialog: React.FC<StockCodeChangeDialogProps> = ({
   const loadWatchlist = async () => {
     setIsLoadingWatchlist(true);
     try {
-      const codes = await fetchWatchlist();
+      // 새로운 API: 종목명이 포함된 watchlist를 한 번에 조회
+      // ls_stock_list.json 캐시 사용으로 API 호출 없이 즉시 조회
+      const items = await fetchWatchlistWithNames();
 
-      // 각 종목의 이름을 조회
-      const items: WatchlistItem[] = codes.map(code => ({
-        code,
-        name: '',
-        isLoading: true
+      const watchlistItems: WatchlistItem[] = items.map(item => ({
+        code: item.code,
+        name: item.name,
+        isLoading: false
       }));
-      setWatchlist(items);
 
-      // 병렬로 종목명 조회
-      const updatedItems = await Promise.all(
-        codes.map(async (code) => {
-          try {
-            const info = await fetchStockInfo(code);
-            return { code, name: info.name, isLoading: false };
-          } catch {
-            return { code, name: '조회 실패', isLoading: false };
-          }
-        })
-      );
-      setWatchlist(updatedItems);
+      setWatchlist(watchlistItems);
+      console.log(`✅ Watchlist loaded: ${watchlistItems.length} stocks (no API calls)`);
     } catch (err) {
       console.error('Failed to load watchlist:', err);
     } finally {

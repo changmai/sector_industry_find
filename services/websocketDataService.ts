@@ -3,7 +3,7 @@
  * 백엔드 서버를 통해 실시간 체결 데이터를 수신합니다.
  */
 
-import { Tick } from '../types';
+import { Tick, Side } from '../types';
 
 // 동적으로 WebSocket URL 생성 (브라우저 호스트에 맞춤)
 const getWebSocketURL = () => {
@@ -72,7 +72,7 @@ function convertLSDataToTick(data: LSTickData): (Tick & { code?: string }) | nul
       time: timeStr,
       price,
       volume,
-      side: isBuy ? 'Buy' : 'Sell',
+      side: isBuy ? Side.Buy : Side.Sell,
       timestamp: timestamp,
       code: data.code,  // 종목코드 포함 (Backend에서 전송)
     };
@@ -109,28 +109,28 @@ export function connectWebSocket(
     try {
       const data = JSON.parse(event.data);
 
-      // 상태 메시지 처리
-      if (data.type === 'status') {
-        console.log('📡 상태:', data.message);
-        onStatus?.(data.message);
-        return;
+      // Optimized: Use switch statement instead of multiple if checks
+      // This reduces branching and object allocation
+      switch (data.type) {
+        case 'status':
+          console.log('📡 상태:', data.message);
+          onStatus?.(data.message);
+          return;
+
+        case 'ping':
+          ws.send('{"type":"pong"}'); // Pre-stringified for performance
+          return;
+
+        case 'code_changed':
+          console.log('📊 종목 변경 완료:', data.code, '-', data.name);
+          onStatus?.(data.message || `종목 변경: ${data.code}`);
+          return;
       }
 
-      // Ping 처리
-      if (data.type === 'ping') {
-        ws.send(JSON.stringify({ type: 'pong' }));
-        return;
-      }
+      // LS증권 체결 데이터 처리 (only when type is not control message)
+      // Early exit if no price data
+      if (data.price === undefined) return;
 
-      // 종목 변경 알림 처리
-      if (data.type === 'code_changed') {
-        console.log('📊 종목 변경 완료:', data.code, '-', data.name);
-        onStatus?.(data.message || `종목 변경: ${data.code}`);
-        return;
-      }
-
-      // LS증권 체결 데이터 처리
-      // 모든 데이터를 전달 (App.tsx에서 filterCodeRef로 필터링)
       const tick = convertLSDataToTick(data);
       if (tick) {
         onTick(tick);
@@ -261,6 +261,34 @@ export async function fetchWatchlist(): Promise<string[]> {
 
   } catch (error) {
     console.error('Error fetching watchlist:', error);
+    return [];
+  }
+}
+
+/**
+ * 서버의 watchlist 조회 (종목명 포함)
+ * ls_stock_list.json 캐시 사용으로 API 호출 없이 즉시 조회
+ * @returns watchlist 종목 정보 배열 (code, name)
+ */
+export async function fetchWatchlistWithNames(): Promise<{ code: string; name: string }[]> {
+  try {
+    const isDev = window.location.hostname.startsWith('192.168.') ||
+                  window.location.hostname === 'localhost' ||
+                  window.location.hostname === '127.0.0.1';
+    const host = isDev ? 'localhost' : window.location.hostname;
+    const apiBase = `${window.location.protocol}//${host}:8000`;
+
+    const response = await fetch(`${apiBase}/api/watchlist`);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch watchlist with names: ${response.status}`);
+    }
+
+    const data = await response.json();
+    console.log(`📋 Watchlist with names loaded: ${data.items?.length || 0} stocks`);
+    return data.items || [];
+
+  } catch (error) {
+    console.error('Error fetching watchlist with names:', error);
     return [];
   }
 }

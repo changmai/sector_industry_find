@@ -1,0 +1,194 @@
+.simulation-controls {
+  background: #1a1a2e;
+  border: 1px solid #333;
+  border-radius: 8px;
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Time Bar */
+.time-bar-container {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.time-label {
+  font-size: 10px;
+  font-family: monospace;
+  color: #888;
+  min-width: 60px;
+  text-align: center;
+}
+
+.slider-container {
+  flex: 1;
+  position: relative;
+  height: 16px;
+  display: flex;
+  align-items: center;
+}
+
+.time-slider {
+  width: 100%;
+  height: 4px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: #333;
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+  position: relative;
+  z-index: 2;
+}
+
+.time-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #ff6b6b;
+  cursor: pointer;
+  box-shadow: 0 0 4px rgba(255, 107, 107, 0.5);
+  transition: transform 0.1s;
+}
+
+.time-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.2);
+}
+
+.time-slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #ff6b6b;
+  cursor: pointer;
+  border: none;
+  box-shadow: 0 0 4px rgba(255, 107, 107, 0.5);
+}
+
+.slider-progress {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 4px;
+  background: linear-gradient(90deg, #ff6b6b, #ff8e8e);
+  border-radius: 2px;
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* Controls Row */
+.controls-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+/* Tick Info */
+.tick-info {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 120px;
+}
+
+.tick-count {
+  font-size: 10px;
+  color: #666;
+  font-family: monospace;
+}
+
+.current-time {
+  font-size: 12px;
+  color: #fff;
+  font-family: monospace;
+  font-weight: bold;
+}
+
+/* Playback Controls */
+.playback-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.control-btn {
+  background: #2a2a3e;
+  border: 1px solid #444;
+  border-radius: 6px;
+  padding: 6px;
+  color: #ccc;
+  cursor: pointer;
+  transition: all 0.15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.control-btn:hover {
+  background: #3a3a4e;
+  color: #fff;
+  border-color: #666;
+}
+
+.control-btn.play-pause {
+  background: #ff6b6b;
+  border-color: #ff6b6b;
+  color: #fff;
+  padding: 8px 12px;
+  border-radius: 8px;
+}
+
+.control-btn.play-pause:hover {
+  background: #ff8e8e;
+  border-color: #ff8e8e;
+}
+
+.control-btn.rewind,
+.control-btn.forward {
+  padding: 6px 8px;
+}
+
+/* Speed Controls */
+.speed-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.speed-label {
+  font-size: 10px;
+  color: #666;
+  margin-right: 4px;
+}
+
+.speed-btn {
+  background: #2a2a3e;
+  border: 1px solid #444;
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 10px;
+  font-weight: bold;
+  color: #888;
+  cursor: pointer;
+  transition: all 0.15s;
+  font-family: monospace;
+}
+
+.speed-btn:hover {
+  background: #3a3a4e;
+  color: #ccc;
+}
+
+.speed-btn.active {
+  background: #4d94ff;
+  border-color: #4d94ff;
+  color: #fff;
+}

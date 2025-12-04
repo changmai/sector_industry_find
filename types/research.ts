@@ -39,6 +39,15 @@ export interface ResearchEvent {
   return_5m: number | null;
   return_10m: number | null;
   return_30m: number | null;
+  // v2.0 추가 필드
+  divergence_type?: 'bullish' | 'bearish' | 'none' | null;
+  time_session?: '장초반' | '장후반' | '정규' | null;
+  is_noisy_time?: boolean;
+  threshold_used?: number | null;
+  threshold_type?: 'dynamic' | 'fixed' | null;
+  buy_intensity?: number | null;
+  sell_intensity?: number | null;
+  order_book_signal?: string | null;
 }
 
 export interface StockSummary {

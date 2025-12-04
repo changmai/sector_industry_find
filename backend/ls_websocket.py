@@ -189,15 +189,18 @@ class LSWebSocketClient:
                     self.log(">>> [연결 성공] 서버 접속 완료!")
 
                     # 각 종목에 대해 개별 구독 요청
-                    for code in self.target_codes:
+                    # 주의: 너무 빠르게 요청하면 서버에서 연결을 끊을 수 있음
+                    total_codes = len(self.target_codes)
+                    self.log(f">>> [구독 시작] 총 {total_codes}개 종목 구독 예정...")
+
+                    for idx, code in enumerate(self.target_codes):
                         # US3 (통합 체결) 구독
                         subscribe_packet = {
                             "header": {"token": token, "tr_type": "3"},
                             "body": {"tr_cd": "US3", "tr_key": f"U{code}   "}
                         }
                         await websocket.send(json.dumps(subscribe_packet))
-                        self.log(f">>> [US3 구독 전송] {code}")
-                        await asyncio.sleep(0.1)  # 요청 간 짧은 대기
+                        self.log(f">>> [US3 구독 전송] {code} ({idx+1}/{total_codes})")
 
                         # UPH (통합프로그램매매종목별) 구독 - 프로그램 매매 연구용
                         if self.enable_uph:
@@ -207,7 +210,16 @@ class LSWebSocketClient:
                             }
                             await websocket.send(json.dumps(uph_packet))
                             self.log(f">>> [UPH 구독 전송] {code}")
-                            await asyncio.sleep(0.1)
+
+                        # 요청 간 딜레이 (Rate Limit 방지)
+                        # 10개마다 1초 대기, 그 외에는 0.3초 대기
+                        if (idx + 1) % 10 == 0:
+                            self.log(f">>> [대기] {idx+1}개 완료, 1초 대기...")
+                            await asyncio.sleep(1.0)
+                        else:
+                            await asyncio.sleep(0.3)
+
+                    self.log(f">>> [구독 완료] 총 {total_codes}개 종목 구독 성공!")
 
                     # 메시지 수신 루프
                     while self.running:
