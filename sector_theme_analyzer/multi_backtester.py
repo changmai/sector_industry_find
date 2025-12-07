@@ -396,6 +396,8 @@ class MultiBacktester:
         Returns:
             list[dict]: 최적화 결과 (승률/수익률 기준 정렬)
         """
+        import time
+
         results = []
 
         # TP/SL 조합 생성
@@ -409,11 +411,16 @@ class MultiBacktester:
             print(f"   익절 범위: {tp_range[0]}% ~ {tp_range[1]}%")
             print(f"   손절 범위: {sl_range[0]}% ~ {sl_range[1]}%")
             print(f"   테스트 조합: {total_combinations}개")
+            print("-" * 50)
 
         count = 0
+        start_time = time.time()
+        elapsed_times = []
+
         for tp in tp_values:
             for sl in sl_values:
                 count += 1
+                iter_start = time.time()
 
                 # 백테스트 실행 (조용히)
                 self.take_profit = tp
@@ -422,6 +429,9 @@ class MultiBacktester:
                 report = self.run(
                     start_date, end_date, condition_expr, params, verbose=False
                 )
+
+                iter_elapsed = time.time() - iter_start
+                elapsed_times.append(iter_elapsed)
 
                 if report and report.total_trades > 0:
                     results.append({
@@ -434,9 +444,17 @@ class MultiBacktester:
                         'sl_count': report.sl_count
                     })
 
-                if verbose and count % 5 == 0:
-                    pct = count / total_combinations * 100
-                    print(f"   진행: {count}/{total_combinations} ({pct:.0f}%)")
+                    if verbose:
+                        # 예상 남은 시간 계산
+                        avg_time = sum(elapsed_times) / len(elapsed_times)
+                        remaining = (total_combinations - count) * avg_time
+                        remaining_min = int(remaining // 60)
+                        remaining_sec = int(remaining % 60)
+
+                        pct = count / total_combinations * 100
+                        print(f"   [{count:>3}/{total_combinations}] TP={tp:+.0f}%, SL={sl:.0f}% → "
+                              f"승률 {report.win_rate:>5.1f}%, 수익률 {report.avg_return:>+6.2f}% "
+                              f"(남은시간: {remaining_min}분 {remaining_sec}초)")
 
         # 평균 수익률 기준 정렬
         results.sort(key=lambda x: x['avg_return'], reverse=True)
