@@ -28,3 +28,25 @@ dist-ssr
 backend/.env
 backend/__pycache__/
 backend/*.txt
+backend/*_cache.json
+backend/ls_stock_list_final.json
+backend/ls_stock_list_updated.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Output directories
+**/output/
+consecutive_rise_finder/output/
+sector_theme_analyzer/output/
+
+# Large data files
+*.parquet
+*.csv
+!requirements*.txt
+
+# Temp files
+nul

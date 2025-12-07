@@ -27,6 +27,7 @@ from research.event_detector import EventDetector, THRESHOLD_VALUE
 from research.price_tracker import PriceTracker
 from research.report_generator import ReportGenerator
 from research.backtester import Backtester, create_backtester
+from industry_mapper import IndustryMapper
 
 # 환경변수 로드
 load_dotenv()
@@ -48,6 +49,34 @@ price_tracker: PriceTracker = None
 report_generator: ReportGenerator = None
 backtester: Backtester = None  # 백테스터
 stock_names_cache: dict = {}  # 종목명 캐시
+industry_mapper: IndustryMapper = None  # 업종코드 매퍼
+
+# 업종 매퍼 캐시 파일 경로 목록
+INDUSTRY_CACHE_PATHS = [
+    "industry_mapping_cache.json",
+    "backend/industry_mapping_cache.json",
+]
+
+
+def get_industry_mapper() -> IndustryMapper:
+    """업종 매퍼 인스턴스 반환 (필요시 초기화 및 캐시 로드)"""
+    global industry_mapper
+
+    if not industry_mapper:
+        industry_mapper = IndustryMapper()
+
+    # 캐시가 로드되지 않았으면 로드 시도
+    if not industry_mapper.stock_to_industry:
+        # main.py 기준 경로 추가
+        cache_paths = INDUSTRY_CACHE_PATHS + [
+            os.path.join(os.path.dirname(__file__), "industry_mapping_cache.json")
+        ]
+        for path in cache_paths:
+            if os.path.exists(path):
+                industry_mapper.load_mapping_cache(path)
+                break
+
+    return industry_mapper
 
 
 def load_stock_names_from_file() -> dict:
@@ -141,6 +170,13 @@ async def lifespan(app: FastAPI):
     # 백테스터 초기화
     backtester = create_backtester(uph_data_dir="uph_raw_data")
     print("✅ Research Tools initialized (including Backtester)")
+
+    # 업종 매퍼 초기화 (캐시 로드)
+    mapper = get_industry_mapper()
+    if mapper.stock_to_industry:
+        print(f"✅ Industry Mapper loaded: {len(mapper.stock_to_industry)}개 종목, {len(mapper.industry_info)}개 업종")
+    else:
+        print("⚠️ Industry Mapper: 캐시 파일 없음 (필요시 /api/industry/build 호출)")
 
     # 3. LS증권 WebSocket 클라이언트 생성
     async def on_data(code: str, body: dict):
@@ -1159,6 +1195,226 @@ async def run_multi_backtest(
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# 업종코드 매퍼 API 엔드포인트 (Industry Mapper)
+# ============================================================================
+
+@app.get("/api/industry/mapping")
+async def get_industry_mapping():
+    """
+    현재 로드된 업종 매핑 정보 조회
+
+    Returns:
+        - stock_count: 매핑된 종목 수
+        - industry_count: 업종 수
+        - is_loaded: 매핑 테이블 로드 여부
+    """
+    mapper = get_industry_mapper()
+
+    return {
+        "status": "success",
+        "stock_count": len(mapper.stock_to_industry),
+        "industry_count": len(mapper.industry_info),
+        "is_loaded": len(mapper.stock_to_industry) > 0
+    }
+
+
+@app.get("/api/industry/stock/{code}")
+async def get_stock_industry(code: str):
+    """
+    특정 종목의 업종코드 조회
+
+    Args:
+        code: 종목코드 (6자리)
+
+    Returns:
+        - code: 종목코드
+        - upcode: 업종코드
+        - industry_name: 업종명
+    """
+    mapper = get_industry_mapper()
+
+    upcode = mapper.get_industry_code(code)
+    industry_name = mapper.get_industry_name(upcode) if upcode else None
+
+    if not upcode:
+        raise HTTPException(status_code=404, detail=f"Industry code not found for stock {code}")
+
+    return {
+        "status": "success",
+        "code": code,
+        "stock_name": stock_names_cache.get(code, code),
+        "upcode": upcode,
+        "industry_name": industry_name
+    }
+
+
+@app.get("/api/industry/list")
+async def get_industry_list():
+    """
+    전체 업종 목록 조회
+
+    Returns:
+        - industries: 업종 목록 (upcode, hname, market_type)
+    """
+    mapper = get_industry_mapper()
+
+    industries = [
+        {
+            "upcode": info.upcode,
+            "hname": info.hname,
+            "market_type": info.market_type
+        }
+        for info in mapper.industry_info.values()
+    ]
+
+    return {
+        "status": "success",
+        "count": len(industries),
+        "industries": industries
+    }
+
+
+@app.post("/api/industry/build")
+async def build_industry_mapping(
+    include_kospi: bool = Query(True, description="코스피 업종 포함"),
+    include_kosdaq: bool = Query(True, description="코스닥 업종 포함")
+):
+    """
+    업종코드 매핑 테이블 구축 (LS증권 API 호출)
+
+    ⚠️ 주의: 이 API는 많은 API 호출을 수행합니다 (수 분 소요).
+    Rate Limiting이 적용되어 있습니다 (10회 요청마다 1초 추가 지연).
+
+    Args:
+        include_kospi: 코스피 업종 포함 여부
+        include_kosdaq: 코스닥 업종 포함 여부
+
+    Returns:
+        - stock_count: 매핑된 종목 수
+        - industry_count: 업종 수
+        - api_calls: API 호출 횟수
+    """
+    mapper = get_industry_mapper()
+
+    try:
+        print("\n" + "="*60)
+        print("🔄 업종코드 매핑 API 호출 시작...")
+        print("="*60)
+
+        # 매핑 테이블 구축
+        mapper.build_mapping_table(
+            include_kospi=include_kospi,
+            include_kosdaq=include_kosdaq
+        )
+
+        # 캐시 저장
+        cache_path = os.path.join(os.path.dirname(__file__), "industry_mapping_cache.json")
+        mapper.save_mapping_cache(cache_path)
+
+        return {
+            "status": "success",
+            "message": "Industry mapping table built successfully",
+            "stock_count": len(mapper.stock_to_industry),
+            "industry_count": len(mapper.industry_info),
+            "api_calls": mapper._api_call_count,
+            "cache_path": cache_path
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/industry/update-stock-list")
+async def update_stock_list_with_industry():
+    """
+    ls_stock_list.json 파일에 업종코드 추가하여 새 파일로 저장
+
+    ⚠️ 주의: 매핑 테이블이 먼저 구축되어 있어야 합니다.
+    /api/industry/build를 먼저 호출하거나 캐시 파일이 있어야 합니다.
+
+    Returns:
+        - updated_count: 업종코드가 추가된 종목 수
+        - output_file: 출력 파일 경로
+    """
+    mapper = get_industry_mapper()
+
+    if not mapper.stock_to_industry:
+        raise HTTPException(
+            status_code=400,
+            detail="Industry mapping table not loaded. Call /api/industry/build first."
+        )
+
+    # 입출력 파일 경로
+    input_paths = [
+        "ls_stock_list.json",
+        "backend/ls_stock_list.json",
+        os.path.join(os.path.dirname(__file__), "ls_stock_list.json")
+    ]
+
+    input_path = None
+    for path in input_paths:
+        if os.path.exists(path):
+            input_path = path
+            break
+
+    if not input_path:
+        raise HTTPException(status_code=404, detail="ls_stock_list.json not found")
+
+    output_path = os.path.join(os.path.dirname(input_path), "ls_stock_list_updated.json")
+
+    try:
+        updated_count = mapper.update_stock_list_file(input_path, output_path)
+
+        return {
+            "status": "success",
+            "message": f"Stock list updated with industry codes",
+            "updated_count": updated_count,
+            "input_file": input_path,
+            "output_file": output_path
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/industry/{upcode}/stocks")
+async def get_stocks_by_industry(upcode: str):
+    """
+    특정 업종에 속한 종목 목록 조회
+
+    Args:
+        upcode: 업종코드
+
+    Returns:
+        - upcode: 업종코드
+        - industry_name: 업종명
+        - stocks: 종목 목록 (code, name)
+    """
+    mapper = get_industry_mapper()
+
+    industry_name = mapper.get_industry_name(upcode)
+    if not industry_name:
+        raise HTTPException(status_code=404, detail=f"Industry {upcode} not found")
+
+    # 해당 업종의 종목 찾기
+    stocks = []
+    for stock_code, ind_code in mapper.stock_to_industry.items():
+        if ind_code == upcode:
+            stocks.append({
+                "code": stock_code,
+                "name": stock_names_cache.get(stock_code, stock_code)
+            })
+
+    return {
+        "status": "success",
+        "upcode": upcode,
+        "industry_name": industry_name,
+        "stock_count": len(stocks),
+        "stocks": stocks
+    }
 
 
 if __name__ == "__main__":
