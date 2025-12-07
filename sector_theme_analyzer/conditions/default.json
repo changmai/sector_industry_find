@@ -1,0 +1,34 @@
+{
+  "A": {
+    "description": "섹터+업종 N일 동시 상승",
+    "days": 5,
+    "ratio": 0.6
+  },
+  "B": {
+    "description": "N봉 신고거래대금",
+    "bars": 60
+  },
+  "C": {
+    "description": "거래량 회전율 상위 N종목",
+    "min_rate": 0.0,
+    "top_n": 100
+  },
+  "D": {
+    "description": "이평 정배열 (단기>중기>장기)",
+    "short": 20,
+    "mid": 60,
+    "long": 120
+  },
+  "E": {
+    "description": "N봉 신고가 대비 등락률 범위",
+    "bars": 60,
+    "min_pct": -5.0,
+    "max_pct": 0.0
+  },
+  "F": {
+    "description": "N봉전 대비 거래량 비율",
+    "compare_bars": 5,
+    "min_ratio": 150,
+    "max_ratio": 9000
+  }
+}
