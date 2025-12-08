@@ -296,40 +296,40 @@ class ConditionEngine:
         return rising
 
     # =========================================================================
-    # 조건 B: 60봉 신고거래대금
+    # 조건 B: N일 신고거래대금
     # =========================================================================
-    def condition_B(self, base_date: str, bars: int = 60, with_details: bool = False):
+    def condition_B(self, base_date: str, days: int = 60, with_details: bool = False):
         """
-        조건 B: N봉 중 신고거래대금
+        조건 B: N일 중 신고거래대금
 
-        해당일의 거래대금이 최근 N봉 중 최고인 종목
+        해당일의 거래대금이 최근 N일 중 최고인 종목
 
         Args:
             base_date: 기준일 (YYYYMMDD)
-            bars: 비교 봉 수 (기본 60봉 = 약 5일)
+            days: 비교 일수 (기본 60일)
             with_details: True면 상세값 dict 반환
 
         Returns:
             set[str] 또는 dict[str, dict]: 조건 충족 종목코드 집합 또는 상세값
         """
-        # 30분봉 데이터에서 해당일 이전 데이터 필터링
-        df = self.df_30m[self.df_30m['날짜'] <= base_date].copy()
+        # 일봉 데이터에서 해당일 이전 데이터 필터링
+        df = self.df_daily[self.df_daily['날짜'] <= base_date].copy()
         df['거래대금'] = pd.to_numeric(df['거래대금'], errors='coerce')
 
         details = {}
 
         # groupby 벡터화 연산으로 최적화
         def check_new_high_value(group):
-            if len(group) < bars:
+            if len(group) < days:
                 return None
-            recent = group.tail(bars)
+            recent = group.tail(days)
             current_value = recent.iloc[-1]['거래대금']
             max_value = recent['거래대금'].max()
             if current_value >= max_value and current_value > 0:
                 if with_details:
                     details[group.name] = {
                         '거래대금': int(current_value),
-                        '60봉최대': int(max_value)
+                        'N일최대': int(max_value)
                     }
                 return group.name
             return None
@@ -456,15 +456,15 @@ class ConditionEngine:
         return self._ma_cache[cache_key]
 
     # =========================================================================
-    # 조건 E: N봉 신고가 대비 등락률
+    # 조건 E: N일 신고가 대비 등락률
     # =========================================================================
-    def condition_E(self, base_date: str, bars: int = 60, min_pct: float = -5.0, max_pct: float = 0.0, with_details: bool = False):
+    def condition_E(self, base_date: str, days: int = 60, min_pct: float = -5.0, max_pct: float = 0.0, with_details: bool = False):
         """
-        조건 E: N봉 신고가 대비 현재가 등락률 범위
+        조건 E: N일 신고가 대비 현재가 등락률 범위
 
         Args:
             base_date: 기준일 (YYYYMMDD)
-            bars: 비교 봉 수 (기본 60)
+            days: 비교 일수 (기본 60일)
             min_pct: 최소 등락률 % (기본 -5%)
             max_pct: 최대 등락률 % (기본 0%)
             with_details: True면 상세값 dict 반환
@@ -472,8 +472,8 @@ class ConditionEngine:
         Returns:
             set[str] 또는 dict[str, dict]: 조건 충족 종목코드 집합 또는 상세값
         """
-        # 30분봉 데이터
-        df = self.df_30m[self.df_30m['날짜'] <= base_date].copy()
+        # 일봉 데이터
+        df = self.df_daily[self.df_daily['날짜'] <= base_date].copy()
         df['고가'] = pd.to_numeric(df['고가'], errors='coerce')
         df['종가'] = pd.to_numeric(df['종가'], errors='coerce')
 
@@ -481,9 +481,9 @@ class ConditionEngine:
 
         # groupby 벡터화 연산으로 최적화
         def check_high_pct(group):
-            if len(group) < bars:
+            if len(group) < days:
                 return None
-            recent = group.tail(bars)
+            recent = group.tail(days)
             high_n = recent['고가'].max()
             current_close = recent.iloc[-1]['종가']
             if high_n <= 0:
@@ -507,15 +507,15 @@ class ConditionEngine:
     # =========================================================================
     # 조건 F: 거래량 비교
     # =========================================================================
-    def condition_F(self, base_date: str, compare_bars: int = 5, min_ratio: float = 150, max_ratio: float = 9000, with_details: bool = False):
+    def condition_F(self, base_date: str, compare_days: int = 5, min_ratio: float = 150, max_ratio: float = 9000, with_details: bool = False):
         """
-        조건 F: 거래량 비교 (N봉전 대비)
+        조건 F: 거래량 비교 (N일전 대비)
 
-        (현재 5봉 평균 거래량) / (N봉전 5봉 평균 거래량) * 100
+        (현재 5일 평균 거래량) / (N일전 5일 평균 거래량) * 100
 
         Args:
             base_date: 기준일 (YYYYMMDD)
-            compare_bars: 비교 기준 봉 간격 (기본 5)
+            compare_days: 비교 기준 일수 간격 (기본 5일)
             min_ratio: 최소 비율 % (기본 150%)
             max_ratio: 최대 비율 % (기본 9000%)
             with_details: True면 상세값 dict 반환
@@ -523,30 +523,30 @@ class ConditionEngine:
         Returns:
             set[str] 또는 dict[str, dict]: 조건 충족 종목코드 집합 또는 상세값
         """
-        # 30분봉 데이터
-        df = self.df_30m[self.df_30m['날짜'] <= base_date].copy()
+        # 일봉 데이터
+        df = self.df_daily[self.df_daily['날짜'] <= base_date].copy()
         df['거래량'] = pd.to_numeric(df['거래량'], errors='coerce')
 
         details = {}
 
         # groupby 벡터화 연산으로 최적화
         def check_volume_ratio(group):
-            required_len = compare_bars * 2 + 5
+            required_len = compare_days * 2 + 5
             if len(group) < required_len:
                 return None
-            recent = group.tail(compare_bars * 3)
-            if len(recent) < compare_bars * 2 + 5:
+            recent = group.tail(compare_days * 3)
+            if len(recent) < compare_days * 2 + 5:
                 return None
             vol_ma5_now = recent['거래량'].tail(5).mean()
-            vol_ma5_ago = recent['거래량'].iloc[-(compare_bars + 5):-(compare_bars)].mean()
+            vol_ma5_ago = recent['거래량'].iloc[-(compare_days + 5):-(compare_days)].mean()
             if vol_ma5_ago <= 0:
                 return None
             ratio = vol_ma5_now / vol_ma5_ago * 100
             if min_ratio <= ratio <= max_ratio:
                 if with_details:
                     details[group.name] = {
-                        '현재5봉평균': int(vol_ma5_now),
-                        'N봉전5봉평균': int(vol_ma5_ago),
+                        '현재5일평균': int(vol_ma5_now),
+                        'N일전5일평균': int(vol_ma5_ago),
                         '거래량비율': round(ratio, 1)
                     }
                 return group.name

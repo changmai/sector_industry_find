@@ -5,8 +5,8 @@
     "ratio": 0.6
   },
   "B": {
-    "description": "N봉 신고거래대금",
-    "bars": 60
+    "description": "N일 신고거래대금",
+    "days": 60
   },
   "C": {
     "description": "거래량 회전율 상위 N종목",
@@ -20,14 +20,14 @@
     "long": 120
   },
   "E": {
-    "description": "N봉 신고가 대비 등락률 범위",
-    "bars": 60,
+    "description": "N일 신고가 대비 등락률 범위",
+    "days": 60,
     "min_pct": -5.0,
     "max_pct": 0.0
   },
   "F": {
-    "description": "N봉전 대비 거래량 비율",
-    "compare_bars": 5,
+    "description": "N일전 대비 거래량 비율",
+    "compare_days": 5,
     "min_ratio": 150,
     "max_ratio": 9000
   },

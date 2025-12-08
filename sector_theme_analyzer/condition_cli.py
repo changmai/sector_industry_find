@@ -42,11 +42,11 @@ from condition_engine import ConditionEngine, CONDITION_DESCRIPTIONS
 # 조건별 상세 필드 정의
 CONDITION_DETAIL_FIELDS = {
     'A': ['업종수', '섹터수'],
-    'B': ['거래대금', '60봉최대'],
+    'B': ['거래대금', 'N일최대'],
     'C': ['회전율'],
     'D': ['MA20', 'MA60', 'MA120'],
     'E': ['신고가', '현재가', '신고가대비'],
-    'F': ['현재5봉평균', 'N봉전5봉평균', '거래량비율'],
+    'F': ['현재5일평균', 'N일전5일평균', '거래량비율'],
     'G': ['회전율'],
 }
 
@@ -73,11 +73,11 @@ def load_params(params_file: str = None) -> dict:
     """조건 파라미터 로드"""
     default_params = {
         'A': {'days': 5, 'ratio': 0.6},
-        'B': {'bars': 60},
+        'B': {'days': 60},
         'C': {'min_rate': 0.0, 'top_n': 100},
         'D': {'short': 20, 'mid': 60, 'long': 120},
-        'E': {'bars': 60, 'min_pct': -5.0, 'max_pct': 0.0},
-        'F': {'compare_bars': 5, 'min_ratio': 150, 'max_ratio': 9000},
+        'E': {'days': 60, 'min_pct': -5.0, 'max_pct': 0.0},
+        'F': {'compare_days': 5, 'min_ratio': 150, 'max_ratio': 9000},
         'G': {'min_rate': 1.0, 'max_rate': 100.0},
     }
 
@@ -135,7 +135,7 @@ def format_condition_value(key: str, value) -> str:
     """조건 상세값 포맷팅"""
     if key in ['회전율', '신고가대비', '거래량비율']:
         return f"{value}%"
-    elif key in ['거래대금', '60봉최대', '현재5봉평균', 'N봉전5봉평균']:
+    elif key in ['거래대금', 'N일최대', '현재5일평균', 'N일전5일평균']:
         if value >= 100000000:  # 1억 이상
             return f"{value/100000000:.1f}억"
         elif value >= 10000:  # 1만 이상
