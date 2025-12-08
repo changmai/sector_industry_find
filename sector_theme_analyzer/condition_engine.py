@@ -308,23 +308,19 @@ class ConditionEngine:
         df = self.df_30m[self.df_30m['날짜'] <= base_date].copy()
         df['거래대금'] = pd.to_numeric(df['거래대금'], errors='coerce')
 
-        matched = set()
-
-        for code in df['종목코드'].unique():
-            df_stock = df[df['종목코드'] == code].tail(bars)
-
-            if len(df_stock) < bars:
-                continue
-
-            # 마지막 봉의 거래대금
-            current_value = df_stock.iloc[-1]['거래대금']
-
-            # 최근 N봉 최고 거래대금
-            max_value = df_stock['거래대금'].max()
-
-            # 현재가 최고인 경우
+        # groupby 벡터화 연산으로 최적화
+        def check_new_high_value(group):
+            if len(group) < bars:
+                return None
+            recent = group.tail(bars)
+            current_value = recent.iloc[-1]['거래대금']
+            max_value = recent['거래대금'].max()
             if current_value >= max_value and current_value > 0:
-                matched.add(code)
+                return group.name
+            return None
+
+        result = df.groupby('종목코드', group_keys=False).apply(check_new_high_value, include_groups=False)
+        matched = set(result.dropna().values)
 
         return matched
 
@@ -449,28 +445,22 @@ class ConditionEngine:
         df['고가'] = pd.to_numeric(df['고가'], errors='coerce')
         df['종가'] = pd.to_numeric(df['종가'], errors='coerce')
 
-        matched = set()
-
-        for code in df['종목코드'].unique():
-            df_stock = df[df['종목코드'] == code].tail(bars)
-
-            if len(df_stock) < bars:
-                continue
-
-            # N봉 최고가
-            high_n = df_stock['고가'].max()
-
-            # 현재 종가
-            current_close = df_stock.iloc[-1]['종가']
-
+        # groupby 벡터화 연산으로 최적화
+        def check_high_pct(group):
+            if len(group) < bars:
+                return None
+            recent = group.tail(bars)
+            high_n = recent['고가'].max()
+            current_close = recent.iloc[-1]['종가']
             if high_n <= 0:
-                continue
-
-            # 신고가 대비 등락률
+                return None
             pct = (current_close - high_n) / high_n * 100
-
             if min_pct <= pct <= max_pct:
-                matched.add(code)
+                return group.name
+            return None
+
+        result = df.groupby('종목코드', group_keys=False).apply(check_high_pct, include_groups=False)
+        matched = set(result.dropna().values)
 
         return matched
 
@@ -496,28 +486,25 @@ class ConditionEngine:
         df = self.df_30m[self.df_30m['날짜'] <= base_date].copy()
         df['거래량'] = pd.to_numeric(df['거래량'], errors='coerce')
 
-        matched = set()
-
-        for code in df['종목코드'].unique():
-            df_stock = df[df['종목코드'] == code].tail(compare_bars * 3)  # 여유있게 가져오기
-
-            if len(df_stock) < compare_bars * 2 + 5:
-                continue
-
-            # 현재 5봉 평균
-            vol_ma5_now = df_stock['거래량'].tail(5).mean()
-
-            # N봉전 5봉 평균
-            vol_ma5_ago = df_stock['거래량'].iloc[-(compare_bars + 5):-(compare_bars)].mean()
-
+        # groupby 벡터화 연산으로 최적화
+        def check_volume_ratio(group):
+            required_len = compare_bars * 2 + 5
+            if len(group) < required_len:
+                return None
+            recent = group.tail(compare_bars * 3)
+            if len(recent) < compare_bars * 2 + 5:
+                return None
+            vol_ma5_now = recent['거래량'].tail(5).mean()
+            vol_ma5_ago = recent['거래량'].iloc[-(compare_bars + 5):-(compare_bars)].mean()
             if vol_ma5_ago <= 0:
-                continue
-
-            # 비율 계산
+                return None
             ratio = vol_ma5_now / vol_ma5_ago * 100
-
             if min_ratio <= ratio <= max_ratio:
-                matched.add(code)
+                return group.name
+            return None
+
+        result = df.groupby('종목코드', group_keys=False).apply(check_volume_ratio, include_groups=False)
+        matched = set(result.dropna().values)
 
         return matched
 
