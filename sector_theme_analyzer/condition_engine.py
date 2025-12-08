@@ -362,9 +362,9 @@ class ConditionEngine:
         if len(df_day) == 0:
             return {} if with_details else set()
 
-        # 상장주식수 추가
+        # 발행주식수 추가
         df_day['주식수'] = df_day['종목코드'].apply(
-            lambda x: self.stock_info.get(x, {}).get('주식수', 0)
+            lambda x: self.stock_info.get(x, {}).get('발행주식수', 0)
         )
 
         # 회전율 계산
