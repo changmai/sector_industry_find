@@ -158,12 +158,14 @@ class ConditionEngine:
     # =========================================================================
     def condition_A(self, base_date: str, days: int = 5, ratio: float = 0.6, with_details: bool = False):
         """
-        조건 A: 섹터+업종 N일 동시 상승
+        조건 A: 섹터+업종 N일 연속 상승
+
+        섹터와 업종 모두 N일 동안 매일 평균 등락률이 양수인 경우에만 충족
 
         Args:
             base_date: 기준일 (YYYYMMDD)
-            days: 분석 기간 (기본 5일)
-            ratio: 섹터 상승 판정 비율 (기본 60%)
+            days: 연속 상승 기간 (기본 5일)
+            ratio: (미사용, 하위 호환성 유지)
             with_details: True면 상세값 dict 반환
 
         Returns:
@@ -217,7 +219,7 @@ class ConditionEngine:
         return details if with_details else matched
 
     def _find_rising_industries(self, df_period: pd.DataFrame) -> list[dict]:
-        """상승 업종 찾기"""
+        """연속 상승 업종 찾기 (매일 양수)"""
         industry_stocks = defaultdict(list)
         industry_names = {}
 
@@ -233,25 +235,29 @@ class ConditionEngine:
                         industry_names[ind_code] = ind_names[i]
 
         rising = []
+        trading_days = sorted(df_period['날짜'].unique())
+
         for ind_code, stock_codes in industry_stocks.items():
             df_ind = df_period[df_period['종목코드'].isin(stock_codes)]
             if len(df_ind) == 0:
                 continue
 
-            stock_avg = df_ind.groupby('종목코드')['등락률'].mean()
-            industry_avg = stock_avg.mean()
+            # 날짜별 업종 평균 등락률 계산
+            daily_avg = df_ind.groupby('날짜')['등락률'].mean()
 
-            if industry_avg > 0:
+            # 모든 날짜에서 양수인지 확인 (연속 상승)
+            if len(daily_avg) == len(trading_days) and (daily_avg > 0).all():
                 rising.append({
                     "code": ind_code,
                     "name": industry_names.get(ind_code, ""),
-                    "avg_change": industry_avg
+                    "avg_change": daily_avg.mean(),
+                    "consecutive_days": len(trading_days)
                 })
 
         return rising
 
     def _find_rising_sectors(self, df_period: pd.DataFrame, ratio: float) -> list[dict]:
-        """상승 섹터 찾기"""
+        """연속 상승 섹터 찾기 (매일 양수)"""
         sector_stocks = defaultdict(list)
         sector_names = {}
 
@@ -267,6 +273,8 @@ class ConditionEngine:
                         sector_names[sec_code] = sec_names[i]
 
         rising = []
+        trading_days = sorted(df_period['날짜'].unique())
+
         for sec_code, stock_codes in sector_stocks.items():
             if len(stock_codes) < 3:
                 continue
@@ -275,20 +283,16 @@ class ConditionEngine:
             if len(df_sec) == 0:
                 continue
 
-            stock_avg = df_sec.groupby('종목코드')['등락률'].mean()
-            if len(stock_avg) == 0:
-                continue
+            # 날짜별 섹터 평균 등락률 계산
+            daily_avg = df_sec.groupby('날짜')['등락률'].mean()
 
-            rising_count = (stock_avg > 0).sum()
-            rise_ratio = rising_count / len(stock_avg)
-            sector_avg = stock_avg.mean()
-
-            if rise_ratio >= ratio and sector_avg > 0:
+            # 모든 날짜에서 양수인지 확인 (연속 상승)
+            if len(daily_avg) == len(trading_days) and (daily_avg > 0).all():
                 rising.append({
                     "code": sec_code,
                     "name": sector_names.get(sec_code, ""),
-                    "avg_change": sector_avg,
-                    "rise_ratio": rise_ratio
+                    "avg_change": daily_avg.mean(),
+                    "consecutive_days": len(trading_days)
                 })
 
         return rising

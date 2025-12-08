@@ -21,7 +21,7 @@ from condition_parser import ConditionParser
 
 # 조건별 설명 템플릿
 CONDITION_DESC_TEMPLATES = {
-    'A': '섹터+업종 {days}일 동시 상승 (비율 {ratio})',
+    'A': '섹터+업종 {days}일 연속 상승',
     'B': '{days}일 신고거래대금',
     'C': '회전율 상위 {top_n}종목 (최소 {min_rate}%)',
     'D': '이평 정배열 ({short}>{mid}>{long}일)',
@@ -72,8 +72,12 @@ def print_condition_details(condition_expr: str):
     print("-" * 70)
 
 
-def simulate_single_stock(code, base_date, base_close, stock_name, turnover, future_days, stock_data, tp, sl):
-    """단일 종목 TP/SL 시뮬레이션 (벡터화 버전)"""
+def simulate_single_stock(code, base_date, base_close, stock_name, turnover, future_days, stock_data, tp, sl, priority="sl"):
+    """단일 종목 TP/SL 시뮬레이션 (벡터화 버전)
+
+    Args:
+        priority: 같은 날 TP/SL 동시 도달 시 우선순위 ("sl" 또는 "tp")
+    """
     result = {
         '종목코드': code,
         '종목명': stock_name,
@@ -119,14 +123,30 @@ def simulate_single_stock(code, base_date, base_close, stock_name, turnover, fut
     first_sl = sl_hits[0] if len(sl_hits) > 0 else len(future_data)
     first_tp = tp_hits[0] if len(tp_hits) > 0 else len(future_data)
 
-    # 손절이 먼저 도달하거나 같은 날이면 손절 우선
-    if first_sl <= first_tp and first_sl < len(future_data):
+    # 같은 날 동시 도달 시 priority 옵션에 따라 처리
+    if first_sl == first_tp and first_sl < len(future_data):
+        # 같은 날 TP/SL 동시 도달
+        if priority == "tp":
+            result['청산일'] = dates[first_tp]
+            result['보유일'] = first_tp + 1
+            result['청산가'] = base_close * (1 + tp / 100)
+            result['수익률'] = tp
+            result['청산사유'] = '익절'
+        else:  # priority == "sl"
+            result['청산일'] = dates[first_sl]
+            result['보유일'] = first_sl + 1
+            result['청산가'] = base_close * (1 + sl / 100)
+            result['수익률'] = sl
+            result['청산사유'] = '손절'
+    elif first_sl < first_tp and first_sl < len(future_data):
+        # 손절이 먼저 도달
         result['청산일'] = dates[first_sl]
         result['보유일'] = first_sl + 1
         result['청산가'] = base_close * (1 + sl / 100)
         result['수익률'] = sl
         result['청산사유'] = '손절'
     elif first_tp < first_sl and first_tp < len(future_data):
+        # 익절이 먼저 도달
         result['청산일'] = dates[first_tp]
         result['보유일'] = first_tp + 1
         result['청산가'] = base_close * (1 + tp / 100)
@@ -143,7 +163,7 @@ def simulate_single_stock(code, base_date, base_close, stock_name, turnover, fut
     return result
 
 
-def run_single_date(engine, cond_parser, df, trading_days, base_date, conditions, max_days, tp, sl, holdings=None, stock_groups=None):
+def run_single_date(engine, cond_parser, df, trading_days, base_date, conditions, max_days, tp, sl, holdings=None, stock_groups=None, priority="sl"):
     """단일 날짜 시뮬레이션 실행 (최적화 버전)"""
     if holdings is None:
         holdings = {}
@@ -194,7 +214,7 @@ def run_single_date(engine, cond_parser, df, trading_days, base_date, conditions
         # 시뮬레이션
         result = simulate_single_stock(
             code, base_date, base_close, stock_name, turnover,
-            future_days, stock_data, tp, sl
+            future_days, stock_data, tp, sl, priority
         )
 
         if result['청산일']:
@@ -282,6 +302,7 @@ def main():
     parser.add_argument("--days", type=int, default=14, help="최대 보유 기간 (기본: 14일)")
     parser.add_argument("--tp", type=float, default=10.0, help="익절 라인 %% (기본: 10)")
     parser.add_argument("--sl", type=float, default=-5.0, help="손절 라인 %% (기본: -5)")
+    parser.add_argument("--priority", type=str, default="sl", choices=["sl", "tp"], help="같은 날 TP/SL 동시 도달 시 우선순위 (기본: sl)")
     parser.add_argument("--top", "-t", type=int, default=50, help="상위 N개 표시")
     args = parser.parse_args()
 
@@ -365,7 +386,7 @@ def main():
 
             results, holdings, stats = run_single_date(
                 engine, cond_parser, df, trading_days, date,
-                args.conditions, args.days, args.tp, args.sl, holdings, stock_groups
+                args.conditions, args.days, args.tp, args.sl, holdings, stock_groups, args.priority
             )
 
             all_results.extend(results)
@@ -437,7 +458,7 @@ def main():
         print(f"\n[2] 조건 평가: {args.conditions}")
         results, _, stats = run_single_date(
             engine, cond_parser, df, trading_days, args.date,
-            args.conditions, args.days, args.tp, args.sl, None, stock_groups
+            args.conditions, args.days, args.tp, args.sl, None, stock_groups, args.priority
         )
         print(f"   -> {stats['total_matched']}개 종목 충족")
 

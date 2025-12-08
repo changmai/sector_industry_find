@@ -1,8 +1,7 @@
 {
   "A": {
-    "description": "섹터+업종 N일 동시 상승",
-    "days": 5,
-    "ratio": 0.6
+    "description": "섹터+업종 N일 연속 상승",
+    "days": 2
   },
   "B": {
     "description": "N일 신고거래대금",
