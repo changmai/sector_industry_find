@@ -30,5 +30,11 @@
     "compare_bars": 5,
     "min_ratio": 150,
     "max_ratio": 9000
+  },
+  "G": {
+    "description": "거래량 비율 X%~Y% (당일/N일평균)",
+    "days": 20,
+    "min_ratio": 100,
+    "max_ratio": 500
   }
 }

@@ -509,6 +509,48 @@ class ConditionEngine:
         return matched
 
     # =========================================================================
+    # 조건 G: 거래량 비율 범위 (당일/N일평균)
+    # =========================================================================
+    def condition_G(self, base_date: str, days: int = 20, min_ratio: float = 100, max_ratio: float = 500) -> set[str]:
+        """
+        조건 G: 거래량 비율 X% ~ Y% 범위 종목
+
+        비율 = (당일 거래량 / N일 평균 거래량) * 100
+
+        Args:
+            base_date: 기준일 (YYYYMMDD)
+            days: 평균 계산 기간 (기본 20일)
+            min_ratio: 최소 비율 % (기본 100% = 평균과 동일)
+            max_ratio: 최대 비율 % (기본 500% = 평균의 5배)
+
+        Returns:
+            set[str]: 조건 충족 종목코드 집합
+        """
+        trading_days = self.get_trading_days(base_date, days + 1)
+        if len(trading_days) < 2:
+            return set()
+
+        df_period = self.df_daily[self.df_daily['날짜'].isin(trading_days)].copy()
+
+        matched = set()
+        for code, group in df_period.groupby('종목코드'):
+            if len(group) < 2:
+                continue
+            group = group.sort_values('날짜')
+            today = group[group['날짜'] == base_date]
+            if len(today) == 0:
+                continue
+            today_vol = today.iloc[0]['거래량']
+            avg_vol = group[group['날짜'] != base_date]['거래량'].mean()
+            if avg_vol <= 0:
+                continue
+            ratio = (today_vol / avg_vol) * 100
+            if min_ratio <= ratio <= max_ratio:
+                matched.add(code)
+
+        return matched
+
+    # =========================================================================
     # 유틸리티 메서드
     # =========================================================================
     def evaluate(self, condition_id: str, base_date: str, params: dict = None) -> set[str]:
@@ -532,6 +574,7 @@ class ConditionEngine:
             'D': lambda: self.condition_D(base_date, **params),
             'E': lambda: self.condition_E(base_date, **params),
             'F': lambda: self.condition_F(base_date, **params),
+            'G': lambda: self.condition_G(base_date, **params),
         }
 
         if condition_id.upper() not in condition_map:
@@ -562,6 +605,7 @@ CONDITION_DESCRIPTIONS = {
     'D': '이평 정배열 (단기>중기>장기)',
     'E': 'N봉 신고가 대비 등락률 범위',
     'F': 'N봉전 대비 거래량 비율',
+    'G': '거래량 비율 X%~Y% (당일/N일평균)',
 }
 
 
