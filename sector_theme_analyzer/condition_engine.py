@@ -158,7 +158,7 @@ class ConditionEngine:
     # =========================================================================
     # 조건 A: 섹터+업종 동시 상승
     # =========================================================================
-    def condition_A(self, base_date: str, days: int = 5, ratio: float = 0.6) -> set[str]:
+    def condition_A(self, base_date: str, days: int = 5, ratio: float = 0.6, with_details: bool = False):
         """
         조건 A: 섹터+업종 N일 동시 상승
 
@@ -166,13 +166,14 @@ class ConditionEngine:
             base_date: 기준일 (YYYYMMDD)
             days: 분석 기간 (기본 5일)
             ratio: 섹터 상승 판정 비율 (기본 60%)
+            with_details: True면 상세값 dict 반환
 
         Returns:
-            set[str]: 조건 충족 종목코드 집합
+            set[str] 또는 dict[str, dict]: 조건 충족 종목코드 집합 또는 상세값
         """
         trading_days = self.get_trading_days(base_date, days)
         if not trading_days:
-            return set()
+            return {} if with_details else set()
 
         df_period = self.df_daily[self.df_daily['날짜'].isin(trading_days)]
 
@@ -183,7 +184,7 @@ class ConditionEngine:
         rising_sectors = self._find_rising_sectors(df_period, ratio)
 
         if not rising_industries or not rising_sectors:
-            return set()
+            return {} if with_details else set()
 
         # 동시 충족 종목
         rising_ind_codes = {ind["code"] for ind in rising_industries}
@@ -193,6 +194,7 @@ class ConditionEngine:
         valid_codes = set(df_period['종목코드'].unique())
 
         matched = set()
+        details = {}
         for stock in self.stocks:
             code = stock.get("단축코드", "")
 
@@ -203,13 +205,18 @@ class ConditionEngine:
             ind_codes = stock.get("업종코드") or []
             sec_codes = stock.get("섹터코드") or []
 
-            has_rising_ind = any(c in rising_ind_codes for c in ind_codes)
-            has_rising_sec = any(c in rising_sec_codes for c in sec_codes)
+            matched_ind = [c for c in ind_codes if c in rising_ind_codes]
+            matched_sec = [c for c in sec_codes if c in rising_sec_codes]
 
-            if has_rising_ind and has_rising_sec:
+            if matched_ind and matched_sec:
                 matched.add(code)
+                if with_details:
+                    details[code] = {
+                        '업종수': len(matched_ind),
+                        '섹터수': len(matched_sec)
+                    }
 
-        return matched
+        return details if with_details else matched
 
     def _find_rising_industries(self, df_period: pd.DataFrame) -> list[dict]:
         """상승 업종 찾기"""
@@ -291,7 +298,7 @@ class ConditionEngine:
     # =========================================================================
     # 조건 B: 60봉 신고거래대금
     # =========================================================================
-    def condition_B(self, base_date: str, bars: int = 60) -> set[str]:
+    def condition_B(self, base_date: str, bars: int = 60, with_details: bool = False):
         """
         조건 B: N봉 중 신고거래대금
 
@@ -300,13 +307,16 @@ class ConditionEngine:
         Args:
             base_date: 기준일 (YYYYMMDD)
             bars: 비교 봉 수 (기본 60봉 = 약 5일)
+            with_details: True면 상세값 dict 반환
 
         Returns:
-            set[str]: 조건 충족 종목코드 집합
+            set[str] 또는 dict[str, dict]: 조건 충족 종목코드 집합 또는 상세값
         """
         # 30분봉 데이터에서 해당일 이전 데이터 필터링
         df = self.df_30m[self.df_30m['날짜'] <= base_date].copy()
         df['거래대금'] = pd.to_numeric(df['거래대금'], errors='coerce')
+
+        details = {}
 
         # groupby 벡터화 연산으로 최적화
         def check_new_high_value(group):
@@ -316,18 +326,23 @@ class ConditionEngine:
             current_value = recent.iloc[-1]['거래대금']
             max_value = recent['거래대금'].max()
             if current_value >= max_value and current_value > 0:
+                if with_details:
+                    details[group.name] = {
+                        '거래대금': int(current_value),
+                        '60봉최대': int(max_value)
+                    }
                 return group.name
             return None
 
         result = df.groupby('종목코드', group_keys=False).apply(check_new_high_value, include_groups=False)
         matched = set(result.dropna().values)
 
-        return matched
+        return details if with_details else matched
 
     # =========================================================================
     # 조건 C: 거래량 회전율 상위
     # =========================================================================
-    def condition_C(self, base_date: str, min_rate: float = 0.0, top_n: int = 100) -> set[str]:
+    def condition_C(self, base_date: str, min_rate: float = 0.0, top_n: int = 100, with_details: bool = False):
         """
         조건 C: 거래량 회전율 상위 N종목
 
@@ -337,14 +352,15 @@ class ConditionEngine:
             base_date: 기준일 (YYYYMMDD)
             min_rate: 최소 회전율 % (기본 0%)
             top_n: 상위 N종목 (기본 100)
+            with_details: True면 상세값 dict 반환
 
         Returns:
-            set[str]: 조건 충족 종목코드 집합
+            set[str] 또는 dict[str, dict]: 조건 충족 종목코드 집합 또는 상세값
         """
         df_day = self.df_daily[self.df_daily['날짜'] == base_date].copy()
 
         if len(df_day) == 0:
-            return set()
+            return {} if with_details else set()
 
         # 상장주식수 추가
         df_day['주식수'] = df_day['종목코드'].apply(
@@ -363,12 +379,17 @@ class ConditionEngine:
         # 상위 N개
         df_top = df_filtered.nlargest(top_n, '회전율')
 
+        if with_details:
+            return {
+                row['종목코드']: {'회전율': round(row['회전율'], 2)}
+                for _, row in df_top.iterrows()
+            }
         return set(df_top['종목코드'])
 
     # =========================================================================
     # 조건 D: 이평 정배열
     # =========================================================================
-    def condition_D(self, base_date: str, short: int = 20, mid: int = 60, long: int = 120) -> set[str]:
+    def condition_D(self, base_date: str, short: int = 20, mid: int = 60, long: int = 120, with_details: bool = False):
         """
         조건 D: 이동평균 정배열
 
@@ -379,15 +400,16 @@ class ConditionEngine:
             short: 단기 이평 기간 (기본 20)
             mid: 중기 이평 기간 (기본 60)
             long: 장기 이평 기간 (기본 120)
+            with_details: True면 상세값 dict 반환
 
         Returns:
-            set[str]: 조건 충족 종목코드 집합
+            set[str] 또는 dict[str, dict]: 조건 충족 종목코드 집합 또는 상세값
         """
         # 이동평균 계산 (캐시 활용)
         df = self._get_ma_data(base_date, [short, mid, long])
 
         if df is None or len(df) == 0:
-            return set()
+            return {} if with_details else set()
 
         # 기준일 데이터
         df_day = df[df['날짜'] == base_date]
@@ -398,13 +420,22 @@ class ConditionEngine:
         ma_long = f'MA{long}'
 
         if ma_short not in df_day.columns or ma_mid not in df_day.columns or ma_long not in df_day.columns:
-            return set()
+            return {} if with_details else set()
 
         df_aligned = df_day[
             (df_day[ma_short] > df_day[ma_mid]) &
             (df_day[ma_mid] > df_day[ma_long])
         ]
 
+        if with_details:
+            return {
+                row['종목코드']: {
+                    f'MA{short}': int(row[ma_short]),
+                    f'MA{mid}': int(row[ma_mid]),
+                    f'MA{long}': int(row[ma_long])
+                }
+                for _, row in df_aligned.iterrows()
+            }
         return set(df_aligned['종목코드'])
 
     def _get_ma_data(self, base_date: str, periods: list[int]) -> pd.DataFrame:
@@ -427,7 +458,7 @@ class ConditionEngine:
     # =========================================================================
     # 조건 E: N봉 신고가 대비 등락률
     # =========================================================================
-    def condition_E(self, base_date: str, bars: int = 60, min_pct: float = -5.0, max_pct: float = 0.0) -> set[str]:
+    def condition_E(self, base_date: str, bars: int = 60, min_pct: float = -5.0, max_pct: float = 0.0, with_details: bool = False):
         """
         조건 E: N봉 신고가 대비 현재가 등락률 범위
 
@@ -436,14 +467,17 @@ class ConditionEngine:
             bars: 비교 봉 수 (기본 60)
             min_pct: 최소 등락률 % (기본 -5%)
             max_pct: 최대 등락률 % (기본 0%)
+            with_details: True면 상세값 dict 반환
 
         Returns:
-            set[str]: 조건 충족 종목코드 집합
+            set[str] 또는 dict[str, dict]: 조건 충족 종목코드 집합 또는 상세값
         """
         # 30분봉 데이터
         df = self.df_30m[self.df_30m['날짜'] <= base_date].copy()
         df['고가'] = pd.to_numeric(df['고가'], errors='coerce')
         df['종가'] = pd.to_numeric(df['종가'], errors='coerce')
+
+        details = {}
 
         # groupby 벡터화 연산으로 최적화
         def check_high_pct(group):
@@ -456,18 +490,24 @@ class ConditionEngine:
                 return None
             pct = (current_close - high_n) / high_n * 100
             if min_pct <= pct <= max_pct:
+                if with_details:
+                    details[group.name] = {
+                        '신고가': int(high_n),
+                        '현재가': int(current_close),
+                        '신고가대비': round(pct, 2)
+                    }
                 return group.name
             return None
 
         result = df.groupby('종목코드', group_keys=False).apply(check_high_pct, include_groups=False)
         matched = set(result.dropna().values)
 
-        return matched
+        return details if with_details else matched
 
     # =========================================================================
     # 조건 F: 거래량 비교
     # =========================================================================
-    def condition_F(self, base_date: str, compare_bars: int = 5, min_ratio: float = 150, max_ratio: float = 9000) -> set[str]:
+    def condition_F(self, base_date: str, compare_bars: int = 5, min_ratio: float = 150, max_ratio: float = 9000, with_details: bool = False):
         """
         조건 F: 거래량 비교 (N봉전 대비)
 
@@ -478,13 +518,16 @@ class ConditionEngine:
             compare_bars: 비교 기준 봉 간격 (기본 5)
             min_ratio: 최소 비율 % (기본 150%)
             max_ratio: 최대 비율 % (기본 9000%)
+            with_details: True면 상세값 dict 반환
 
         Returns:
-            set[str]: 조건 충족 종목코드 집합
+            set[str] 또는 dict[str, dict]: 조건 충족 종목코드 집합 또는 상세값
         """
         # 30분봉 데이터
         df = self.df_30m[self.df_30m['날짜'] <= base_date].copy()
         df['거래량'] = pd.to_numeric(df['거래량'], errors='coerce')
+
+        details = {}
 
         # groupby 벡터화 연산으로 최적화
         def check_volume_ratio(group):
@@ -500,18 +543,24 @@ class ConditionEngine:
                 return None
             ratio = vol_ma5_now / vol_ma5_ago * 100
             if min_ratio <= ratio <= max_ratio:
+                if with_details:
+                    details[group.name] = {
+                        '현재5봉평균': int(vol_ma5_now),
+                        'N봉전5봉평균': int(vol_ma5_ago),
+                        '거래량비율': round(ratio, 1)
+                    }
                 return group.name
             return None
 
         result = df.groupby('종목코드', group_keys=False).apply(check_volume_ratio, include_groups=False)
         matched = set(result.dropna().values)
 
-        return matched
+        return details if with_details else matched
 
     # =========================================================================
     # 조건 G: 회전율 범위
     # =========================================================================
-    def condition_G(self, base_date: str, min_rate: float = 1.0, max_rate: float = 100.0) -> set[str]:
+    def condition_G(self, base_date: str, min_rate: float = 1.0, max_rate: float = 100.0, with_details: bool = False):
         """
         조건 G: 회전율 X% ~ Y% 범위 필터링
 
@@ -521,14 +570,15 @@ class ConditionEngine:
             base_date: 기준일 (YYYYMMDD)
             min_rate: 최소 회전율 % (기본 1%)
             max_rate: 최대 회전율 % (기본 100%)
+            with_details: True면 상세값 dict 반환
 
         Returns:
-            set[str]: 조건 충족 종목코드 집합
+            set[str] 또는 dict[str, dict]: 조건 충족 종목코드 집합 또는 상세값
         """
         df_day = self.df_daily[self.df_daily['날짜'] == base_date].copy()
 
         if len(df_day) == 0:
-            return set()
+            return {} if with_details else set()
 
         # 발행주식수 추가 (ls_stock_list_final.json의 '발행주식수' 필드)
         df_day['발행주식수'] = df_day['종목코드'].apply(
@@ -544,38 +594,45 @@ class ConditionEngine:
         # 회전율 범위 필터링
         df_filtered = df_day[(df_day['회전율'] >= min_rate) & (df_day['회전율'] <= max_rate)]
 
+        if with_details:
+            return {
+                row['종목코드']: {'회전율': round(row['회전율'], 2)}
+                for _, row in df_filtered.iterrows()
+            }
         return set(df_filtered['종목코드'])
 
     # =========================================================================
     # 유틸리티 메서드
     # =========================================================================
-    def evaluate(self, condition_id: str, base_date: str, params: dict = None) -> set[str]:
+    def evaluate(self, condition_id: str, base_date: str, params: dict = None, with_details: bool = False):
         """
         조건 ID로 평가
 
         Args:
-            condition_id: 조건 ID (A, B, C, D, E, F)
+            condition_id: 조건 ID (A, B, C, D, E, F, G)
             base_date: 기준일
             params: 조건별 파라미터 (없으면 기본값 사용)
+            with_details: True면 상세값 dict 반환
 
         Returns:
-            set[str]: 조건 충족 종목코드 집합
+            set[str] 또는 dict[str, dict]: 조건 충족 종목코드 집합 또는 상세값
         """
         params = params or {}
+        eval_params = {**params, 'with_details': with_details}
 
         condition_map = {
-            'A': lambda: self.condition_A(base_date, **params),
-            'B': lambda: self.condition_B(base_date, **params),
-            'C': lambda: self.condition_C(base_date, **params),
-            'D': lambda: self.condition_D(base_date, **params),
-            'E': lambda: self.condition_E(base_date, **params),
-            'F': lambda: self.condition_F(base_date, **params),
-            'G': lambda: self.condition_G(base_date, **params),
+            'A': lambda: self.condition_A(base_date, **eval_params),
+            'B': lambda: self.condition_B(base_date, **eval_params),
+            'C': lambda: self.condition_C(base_date, **eval_params),
+            'D': lambda: self.condition_D(base_date, **eval_params),
+            'E': lambda: self.condition_E(base_date, **eval_params),
+            'F': lambda: self.condition_F(base_date, **eval_params),
+            'G': lambda: self.condition_G(base_date, **eval_params),
         }
 
         if condition_id.upper() not in condition_map:
             print(f"   [WARN] 알 수 없는 조건: {condition_id}")
-            return set()
+            return {} if with_details else set()
 
         return condition_map[condition_id.upper()]()
 

@@ -11,7 +11,7 @@
   "C": {
     "description": "거래량 회전율 상위 N종목",
     "min_rate": 0.0,
-    "top_n": 100
+    "top_n": 10
   },
   "D": {
     "description": "이평 정배열 (단기>중기>장기)",
@@ -33,7 +33,7 @@
   },
   "G": {
     "description": "회전율 X%~Y% 범위",
-    "min_rate": 1.0,
+    "min_rate": 47.0,
     "max_rate": 100.0
   }
 }
