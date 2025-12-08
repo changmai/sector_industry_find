@@ -189,9 +189,17 @@ class ConditionEngine:
         rising_ind_codes = {ind["code"] for ind in rising_industries}
         rising_sec_codes = {sec["code"] for sec in rising_sectors}
 
+        # 해당 기간에 거래 데이터가 있는 종목코드 집합
+        valid_codes = set(df_period['종목코드'].unique())
+
         matched = set()
         for stock in self.stocks:
             code = stock.get("단축코드", "")
+
+            # 해당 기간에 거래 데이터가 있는 종목만 (local_analyzer.py와 동일)
+            if code not in valid_codes:
+                continue
+
             ind_codes = stock.get("업종코드") or []
             sec_codes = stock.get("섹터코드") or []
 
