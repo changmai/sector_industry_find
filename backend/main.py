@@ -80,11 +80,11 @@ def get_industry_mapper() -> IndustryMapper:
 
 
 def load_stock_names_from_file() -> dict:
-    """ls_stock_list.json 파일에서 종목명 로드 (API 호출 없이 즉시 조회 가능)"""
+    """ls_stock_list_final.json 파일에서 종목명 로드 (API 호출 없이 즉시 조회 가능)"""
     possible_paths = [
-        "ls_stock_list.json",
-        "backend/ls_stock_list.json",
-        os.path.join(os.path.dirname(__file__), "ls_stock_list.json")
+        "ls_stock_list_final.json",
+        "backend/ls_stock_list_final.json",
+        os.path.join(os.path.dirname(__file__), "ls_stock_list_final.json")
     ]
 
     for path in possible_paths:
@@ -104,7 +104,7 @@ def load_stock_names_from_file() -> dict:
             except Exception as e:
                 print(f"⚠️ 종목명 파일 로드 실패 ({path}): {e}")
 
-    print("⚠️ ls_stock_list.json 파일을 찾을 수 없습니다. API 호출로 대체됩니다.")
+    print("⚠️ ls_stock_list_final.json 파일을 찾을 수 없습니다. API 호출로 대체됩니다.")
     return {}
 
 
@@ -552,7 +552,7 @@ async def subscribe_to_stock(code: str):
 async def get_watchlist_with_names():
     """
     구독 중인 종목 목록과 종목명 반환
-    ls_stock_list.json에서 로드된 캐시 사용 (API 호출 없음)
+    ls_stock_list_final.json에서 로드된 캐시 사용 (API 호출 없음)
     """
     items = []
     for code in watchlist_codes:
@@ -1330,7 +1330,7 @@ async def build_industry_mapping(
 @app.post("/api/industry/update-stock-list")
 async def update_stock_list_with_industry():
     """
-    ls_stock_list.json 파일에 업종코드 추가하여 새 파일로 저장
+    ls_stock_list_final.json 파일에 업종코드 추가하여 새 파일로 저장
 
     ⚠️ 주의: 매핑 테이블이 먼저 구축되어 있어야 합니다.
     /api/industry/build를 먼저 호출하거나 캐시 파일이 있어야 합니다.
@@ -1349,9 +1349,9 @@ async def update_stock_list_with_industry():
 
     # 입출력 파일 경로
     input_paths = [
-        "ls_stock_list.json",
-        "backend/ls_stock_list.json",
-        os.path.join(os.path.dirname(__file__), "ls_stock_list.json")
+        "ls_stock_list_final.json",
+        "backend/ls_stock_list_final.json",
+        os.path.join(os.path.dirname(__file__), "ls_stock_list_final.json")
     ]
 
     input_path = None
@@ -1361,7 +1361,7 @@ async def update_stock_list_with_industry():
             break
 
     if not input_path:
-        raise HTTPException(status_code=404, detail="ls_stock_list.json not found")
+        raise HTTPException(status_code=404, detail="ls_stock_list_final.json not found")
 
     output_path = os.path.join(os.path.dirname(input_path), "ls_stock_list_updated.json")
 

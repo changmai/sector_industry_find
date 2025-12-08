@@ -89,9 +89,9 @@ LS_APP_KEY=your_app_key
 LS_APP_SECRET=your_app_secret
 
 # 주요 설정 파일
-backend/watchlist.json          # 구독 종목 리스트
-backend/ls_stock_list.json      # 전체 종목 마스터 (섹터/업종코드 포함)
-backend/industry_mapping_cache.json  # 업종 매핑 캐시
+backend/watchlist.json              # 구독 종목 리스트
+backend/ls_stock_list_final.json    # 전체 종목 마스터 (섹터/업종코드/발행주식수 포함)
+backend/industry_mapping_cache.json # 업종 매핑 캐시
 ```
 
 ## Research Tools (v2.0)
@@ -106,4 +106,4 @@ backend/industry_mapping_cache.json  # 업종 매핑 캐시
 - **한국어 변수/주석**: 도메인 용어는 한국어 사용 (업종코드, 종목명 등)
 - **Color Convention**: 빨강=상승(Korean market), 파랑=하락
 - **API 응답**: `{ status: "success", ... }` 또는 HTTPException
-- **캐시 전략**: 종목명은 ls_stock_list.json에서 로드 (API 호출 최소화)
+- **캐시 전략**: 종목명은 ls_stock_list_final.json에서 로드 (API 호출 최소화)

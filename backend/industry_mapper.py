@@ -577,12 +577,12 @@ class IndustryMapper:
 
     def update_stock_list_file(
         self,
-        input_path: str = "ls_stock_list.json",
+        input_path: str = "ls_stock_list_final.json",
         output_path: str = "ls_stock_list_final.json",
         include_sector: bool = True
     ) -> int:
         """
-        ls_stock_list.json 파일에 업종코드 및 섹터코드 추가 (복수 지원)
+        ls_stock_list_final.json 파일에 업종코드 및 섹터코드 추가 (복수 지원)
 
         Args:
             input_path: 입력 파일 경로
@@ -742,7 +742,7 @@ class IndustryMapper:
 
 
 def run_industry_mapping(
-    input_file: str = "ls_stock_list.json",
+    input_file: str = "ls_stock_list_final.json",
     output_file: str = "ls_stock_list_final.json",
     cache_file: str = "industry_mapping_cache.json",
     use_cache: bool = True,
@@ -812,7 +812,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="LS증권 업종/섹터 코드 매퍼")
-    parser.add_argument("-i", "--input", default="ls_stock_list.json", help="입력 파일")
+    parser.add_argument("-i", "--input", default="ls_stock_list_final.json", help="입력 파일")
     parser.add_argument("-o", "--output", default="ls_stock_list_final.json", help="출력 파일")
     parser.add_argument("-c", "--cache", default="industry_mapping_cache.json", help="캐시 파일")
     parser.add_argument("--no-cache", action="store_true", help="캐시 사용 안 함")
