@@ -81,22 +81,31 @@ def load_params(params_file: str = None) -> dict:
         'G': {'min_rate': 1.0, 'max_rate': 100.0},
     }
 
-    # 자동으로 default.json 로드 (params_file 미지정 시)
-    if params_file is None:
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        params_file = os.path.join(script_dir, 'conditions', 'default.json')
+    # 1. 기본 default.json 자동 로드
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    default_json_path = os.path.join(script_dir, 'conditions', 'default.json')
 
+    if os.path.exists(default_json_path):
+        with open(default_json_path, 'r', encoding='utf-8') as f:
+            json_params = json.load(f)
+            for key, value in json_params.items():
+                if key in default_params:
+                    # description 필드 제외하고 업데이트
+                    param_vals = {k: v for k, v in value.items() if k != 'description'}
+                    default_params[key].update(param_vals)
+                else:
+                    default_params[key] = value
+
+    # 2. 사용자 지정 파일 추가 로드 (있으면 덮어쓰기)
     if params_file and os.path.exists(params_file):
         with open(params_file, 'r', encoding='utf-8') as f:
             user_params = json.load(f)
             for key, value in user_params.items():
-                if isinstance(value, dict):
-                    # description 필드 제외 (조건 메서드에 전달되지 않도록)
-                    param_only = {k: v for k, v in value.items() if k != 'description'}
-                    if key in default_params:
-                        default_params[key].update(param_only)
-                    else:
-                        default_params[key] = param_only
+                if key in default_params:
+                    param_vals = {k: v for k, v in value.items() if k != 'description'}
+                    default_params[key].update(param_vals)
+                else:
+                    default_params[key] = value
 
     return default_params
 
