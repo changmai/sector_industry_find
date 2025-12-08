@@ -50,6 +50,14 @@ CONDITION_DETAIL_FIELDS = {
     'G': ['회전율'],
 }
 
+# 조건별 정렬 기준 (기본: 등락률 내림차순)
+CONDITION_SORT_KEY = {
+    'C': ('회전율', True),   # 회전율 내림차순
+    'G': ('회전율', True),   # 회전율 내림차순
+    'B': ('거래대금', True), # 거래대금 내림차순
+    'F': ('거래량비율', True), # 거래량비율 내림차순
+}
+
 
 def print_header():
     """헤더 출력"""
@@ -110,7 +118,7 @@ def load_params(params_file: str = None) -> dict:
     return default_params
 
 
-def get_stock_details_with_condition(engine: ConditionEngine, condition_details: dict, base_date: str) -> list:
+def get_stock_details_with_condition(engine: ConditionEngine, condition_details: dict, base_date: str, condition_id: str) -> list:
     """종목코드와 조건 상세값을 병합하여 상세 정보 반환"""
     details = []
 
@@ -143,8 +151,15 @@ def get_stock_details_with_condition(engine: ConditionEngine, condition_details:
         item['condition_vals'] = cond_vals
         details.append(item)
 
-    # 등락률 기준 정렬
-    details.sort(key=lambda x: x['change'], reverse=True)
+    # 조건별 정렬 기준 적용
+    sort_config = CONDITION_SORT_KEY.get(condition_id.upper())
+    if sort_config:
+        sort_field, descending = sort_config
+        details.sort(key=lambda x: x.get('condition_vals', {}).get(sort_field, 0), reverse=descending)
+    else:
+        # 기본: 등락률 기준 정렬
+        details.sort(key=lambda x: x['change'], reverse=True)
+
     return details
 
 
@@ -248,8 +263,8 @@ def run_condition_query(engine: ConditionEngine, condition_id: str, base_date: s
         print(f"\n   조건 {condition_id}: 충족 종목 없음")
         return
 
-    # 상세 정보 조회 (조건 상세값 병합)
-    details = get_stock_details_with_condition(engine, condition_details, base_date)
+    # 상세 정보 조회 (조건 상세값 병합, 조건별 정렬 적용)
+    details = get_stock_details_with_condition(engine, condition_details, base_date, condition_id)
 
     # 출력
     print_stock_list_with_details(details, condition_id, base_date, top_n)
