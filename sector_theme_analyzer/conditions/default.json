@@ -32,9 +32,8 @@
     "max_ratio": 9000
   },
   "G": {
-    "description": "거래량 비율 X%~Y% (당일/N일평균)",
-    "days": 20,
-    "min_ratio": 100,
-    "max_ratio": 500
+    "description": "회전율 X%~Y% 범위",
+    "min_rate": 1.0,
+    "max_rate": 100.0
   }
 }

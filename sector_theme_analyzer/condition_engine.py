@@ -509,46 +509,42 @@ class ConditionEngine:
         return matched
 
     # =========================================================================
-    # 조건 G: 거래량 비율 범위 (당일/N일평균)
+    # 조건 G: 회전율 범위
     # =========================================================================
-    def condition_G(self, base_date: str, days: int = 20, min_ratio: float = 100, max_ratio: float = 500) -> set[str]:
+    def condition_G(self, base_date: str, min_rate: float = 1.0, max_rate: float = 100.0) -> set[str]:
         """
-        조건 G: 거래량 비율 X% ~ Y% 범위 종목
+        조건 G: 회전율 X% ~ Y% 범위 필터링
 
-        비율 = (당일 거래량 / N일 평균 거래량) * 100
+        회전율 = 당일 거래량 / 발행주식수 * 100
 
         Args:
             base_date: 기준일 (YYYYMMDD)
-            days: 평균 계산 기간 (기본 20일)
-            min_ratio: 최소 비율 % (기본 100% = 평균과 동일)
-            max_ratio: 최대 비율 % (기본 500% = 평균의 5배)
+            min_rate: 최소 회전율 % (기본 1%)
+            max_rate: 최대 회전율 % (기본 100%)
 
         Returns:
             set[str]: 조건 충족 종목코드 집합
         """
-        trading_days = self.get_trading_days(base_date, days + 1)
-        if len(trading_days) < 2:
+        df_day = self.df_daily[self.df_daily['날짜'] == base_date].copy()
+
+        if len(df_day) == 0:
             return set()
 
-        df_period = self.df_daily[self.df_daily['날짜'].isin(trading_days)].copy()
+        # 발행주식수 추가 (ls_stock_list_final.json의 '발행주식수' 필드)
+        df_day['발행주식수'] = df_day['종목코드'].apply(
+            lambda x: self.stock_info.get(x, {}).get('발행주식수', 0)
+        )
 
-        matched = set()
-        for code, group in df_period.groupby('종목코드'):
-            if len(group) < 2:
-                continue
-            group = group.sort_values('날짜')
-            today = group[group['날짜'] == base_date]
-            if len(today) == 0:
-                continue
-            today_vol = today.iloc[0]['거래량']
-            avg_vol = group[group['날짜'] != base_date]['거래량'].mean()
-            if avg_vol <= 0:
-                continue
-            ratio = (today_vol / avg_vol) * 100
-            if min_ratio <= ratio <= max_ratio:
-                matched.add(code)
+        # 회전율 계산: 거래량 / 발행주식수 * 100
+        df_day['회전율'] = df_day.apply(
+            lambda row: (row['거래량'] / row['발행주식수'] * 100) if row['발행주식수'] > 0 else 0,
+            axis=1
+        )
 
-        return matched
+        # 회전율 범위 필터링
+        df_filtered = df_day[(df_day['회전율'] >= min_rate) & (df_day['회전율'] <= max_rate)]
+
+        return set(df_filtered['종목코드'])
 
     # =========================================================================
     # 유틸리티 메서드
@@ -605,7 +601,7 @@ CONDITION_DESCRIPTIONS = {
     'D': '이평 정배열 (단기>중기>장기)',
     'E': 'N봉 신고가 대비 등락률 범위',
     'F': 'N봉전 대비 거래량 비율',
-    'G': '거래량 비율 X%~Y% (당일/N일평균)',
+    'G': '회전율 X%~Y% 범위',
 }
 
 
