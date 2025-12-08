@@ -114,8 +114,10 @@ class ConditionParser:
             return self._temp_results.get(expr, set())
 
         # 단일 조건 평가
-        if expr in ['A', 'B', 'C', 'D', 'E', 'F']:
+        if expr in ['A', 'B', 'C', 'D', 'E', 'F', 'G']:
             condition_params = self.params.get(expr, {})
+            # description 필드 제외 (함수 파라미터가 아님)
+            condition_params = {k: v for k, v in condition_params.items() if k != 'description'}
             return self.engine.evaluate(expr, base_date, condition_params)
 
         print(f"   [WARN] 알 수 없는 토큰: {expr}")
@@ -135,7 +137,7 @@ class ConditionParser:
             return False, "괄호 짝이 맞지 않습니다"
 
         # 유효한 조건 ID 확인
-        valid_conditions = {'A', 'B', 'C', 'D', 'E', 'F'}
+        valid_conditions = {'A', 'B', 'C', 'D', 'E', 'F', 'G'}
         tokens = re.findall(r'[A-Z]', expr)
 
         for token in tokens:

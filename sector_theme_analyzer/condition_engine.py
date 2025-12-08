@@ -57,13 +57,12 @@ class ConditionEngine:
     def __init__(self, parquet_path: str = None, json_path: str = None):
         """
         Args:
-            parquet_path: OHLC Parquet 파일 경로 (30분봉)
+            parquet_path: 일봉 OHLC Parquet 파일 경로
             json_path: 종목 리스트 JSON 경로
         """
         self.parquet_path = parquet_path
         self.json_path = json_path or STOCK_LIST_PATH
 
-        self.df_30m: pd.DataFrame = None    # 30분봉 원본 데이터
         self.df_daily: pd.DataFrame = None  # 일봉 데이터
         self.stocks: list[dict] = []         # 종목 리스트
         self.stock_info: dict = {}           # {종목코드: 종목정보}
@@ -73,23 +72,26 @@ class ConditionEngine:
         self._trading_days_cache: dict = {}  # 거래일 캐시
 
     def load_data(self) -> bool:
-        """데이터 로드"""
+        """데이터 로드 (일봉 전용)"""
         print("\n   [LOAD] 데이터 로드 중...")
 
         # Parquet 로드
         if self.parquet_path and os.path.exists(self.parquet_path):
-            self.df_30m = pd.read_parquet(self.parquet_path)
+            df = pd.read_parquet(self.parquet_path)
         else:
-            # 기본 경로에서 찾기
-            default_files = [f for f in os.listdir(OUTPUT_DIR) if f.endswith('.parquet') and '30m' in f]
+            # 기본 경로에서 일봉 파일 찾기 (30m 제외, 회전율 포함 파일 우선)
+            all_files = [f for f in os.listdir(OUTPUT_DIR) if f.endswith('.parquet') and '30m' not in f]
+            turnover_files = [f for f in all_files if 'with_turnover' in f]
+            default_files = turnover_files if turnover_files else all_files
+
             if default_files:
                 self.parquet_path = os.path.join(OUTPUT_DIR, sorted(default_files)[-1])
-                self.df_30m = pd.read_parquet(self.parquet_path)
+                df = pd.read_parquet(self.parquet_path)
             else:
-                print("   [ERROR] Parquet 파일을 찾을 수 없습니다.")
+                print("   [ERROR] 일봉 Parquet 파일을 찾을 수 없습니다.")
                 return False
 
-        print(f"   -> Parquet: {len(self.df_30m):,}행, {self.df_30m['종목코드'].nunique()}종목")
+        print(f"   -> Parquet: {len(df):,}행, {df['종목코드'].nunique()}종목")
 
         # JSON 로드
         with open(self.json_path, "r", encoding="utf-8") as f:
@@ -102,41 +104,37 @@ class ConditionEngine:
 
         print(f"   -> JSON: {len(self.stocks)}종목")
 
-        # 일봉 변환
-        self._convert_to_daily()
+        # 일봉 데이터 처리
+        self._load_daily(df)
 
         return True
 
-    def _convert_to_daily(self):
-        """30분봉 → 일봉 변환"""
-        print("   [CONVERT] 30분봉 → 일봉 변환 중...")
-
-        df = self.df_30m.copy()
+    def _load_daily(self, df: pd.DataFrame):
+        """일봉 데이터 로드 및 전처리"""
+        print("   [DAILY] 일봉 데이터 로드")
 
         # 숫자 타입 변환
-        numeric_cols = ['시가', '고가', '저가', '종가', '거래량', '거래대금']
+        numeric_cols = ['시가', '고가', '저가', '종가', '거래량', '거래대금', '발행주식수', '거래회전율']
         for col in numeric_cols:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
 
-        # 일봉 집계
-        self.df_daily = df.groupby(['종목코드', '종목명', '날짜']).agg({
-            '시가': 'first',
-            '고가': 'max',
-            '저가': 'min',
-            '종가': 'last',
-            '거래량': 'sum',
-            '거래대금': 'sum'
-        }).reset_index()
-
         # 정렬
-        self.df_daily = self.df_daily.sort_values(['종목코드', '날짜'])
+        df = df.sort_values(['종목코드', '날짜'])
 
-        # 전일종가, 등락률 계산
-        self.df_daily['전일종가'] = self.df_daily.groupby('종목코드')['종가'].shift(1)
-        self.df_daily['등락률'] = ((self.df_daily['종가'] - self.df_daily['전일종가']) / self.df_daily['전일종가'] * 100).round(2)
+        # 전일종가, 등락률 계산 (기존에 없으면 생성)
+        if '전일종가' not in df.columns or df['전일종가'].isna().all():
+            df['전일종가'] = df.groupby('종목코드')['종가'].shift(1)
+        if '등락률' not in df.columns or df['등락률'].isna().all():
+            df['등락률'] = ((df['종가'] - df['전일종가']) / df['전일종가'] * 100).round(2)
 
+        self.df_daily = df
+
+        # 회전율 컬럼 존재 여부 출력
+        has_turnover = '거래회전율' in df.columns and not df['거래회전율'].isna().all()
         print(f"   -> 일봉: {len(self.df_daily):,}행")
+        if has_turnover:
+            print(f"   -> 회전율 컬럼: 있음 (평균 {df['거래회전율'].mean():.2f}%)")
 
     def get_trading_days(self, base_date: str, days: int) -> list[str]:
         """기준일 포함 최근 N 거래일 반환"""

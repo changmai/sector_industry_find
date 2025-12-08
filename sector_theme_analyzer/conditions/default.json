@@ -33,7 +33,7 @@
   },
   "G": {
     "description": "회전율 X%~Y% 범위",
-    "min_rate": 47.0,
-    "max_rate": 100.0
+    "min_rate": 10.0,
+    "max_rate": 30.0
   }
 }
