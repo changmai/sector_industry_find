@@ -158,7 +158,23 @@ python combination_tester.py --conditions A,D,H --optimize --tp-min 5 --tp-max 1
 
 # 트레일링스탑 + 타임컷
 python combination_tester.py --conditions A,H --trailing-start 5 --trailing-offset 3 --time-cut-days 3 --time-cut-min-return 2
+
+# 파라미터 그리드 테스트 (개별 조건 파라미터 최적화)
+python combination_tester.py --conditions H --param-grid "H.smart_money_turnover:5,10,15;H.support_margin:0.02,0.03"
+
+# 2단계 자동 최적화 ([1단계] 개별 파라미터 최적화 → [2단계] 조합 테스트)
+python combination_tester.py --conditions A,D,H,I --auto-optimize --start-date 20240101 --end-date 20241231
+
+# 자동 최적화 후 default.json에 최적 파라미터 저장
+python combination_tester.py --conditions H,I --auto-optimize --update-defaults
 ```
+
+### 조건 H/I 필터 (양봉, 거래대금)
+
+조건 H와 I는 "떨어지는 칼날" 방지를 위한 추가 필터 지원:
+- `require_bullish_candle`: 양봉 필터 (Close >= Open)
+- `require_lower_wick`: 아래꼬리 필터 (조건 H)
+- `min_trade_value`: 최소 거래대금 (H: 5억, I: 10억)
 
 ## Code Conventions
 

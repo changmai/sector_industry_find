@@ -36,22 +36,29 @@
     "max_rate": 900.0
   },
   "H": {
-    "description": "20일선 눌림목 (세력진입 후 조정)",
+    "description": "20일선 눌림목 (세력진입 후 조정, 양봉필터)",
     "ma_short": 20,
     "ma_mid": 60,
     "ma_long": 120,
     "smart_money_turnover": 10.0,
     "smart_money_lookback": 20,
     "support_margin": 0.03,
-    "volume_dry_ratio": 0.7
+    "support_lower": 0.99,
+    "volume_dry_ratio": 0.7,
+    "min_trade_value": 500000000,
+    "require_bullish_candle": true,
+    "require_lower_wick": false
   },
   "I": {
-    "description": "5일선 급등주 (모멘텀 조정)",
+    "description": "5일선 급등주 (모멘텀 조정, 양봉필터)",
     "ma_short": 5,
     "ma_mid": 20,
-    "disparity_min": 1.15,
+    "disparity_min": 1.10,
+    "disparity_max": 1.25,
     "support_margin": 0.02,
-    "min_turnover": 3.0
+    "min_turnover": 3.0,
+    "min_trade_value": 1000000000,
+    "require_bullish_candle": true
   },
   "GT_P1": {
     "description": "특정 테마(섹터) 소속 종목",

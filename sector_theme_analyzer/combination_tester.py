@@ -2,19 +2,105 @@
 조건 조합 자동 테스트 도구 (Combination Tester)
 
 여러 조건의 모든 AND 조합을 자동으로 테스트하여 최적의 조합을 찾습니다.
+파라미터 조합 테스트, 2단계 자동 최적화도 지원합니다.
 
-사용 예시:
-    # 기본 조건 A,B,C,D의 모든 조합 테스트 (고정 TP/SL)
+================================================================================
+사용 예시
+================================================================================
+
+[1] 기본 조합 테스트 (고정 TP/SL)
+--------------------------------------------------------------------------------
+    # A,B,C,D 조건의 모든 2~4개 조합 테스트
     python combination_tester.py --conditions A,B,C,D --start-date 20231115 --end-date 20251205 --tp 10 --sl -5
 
-    # GT 조건 포함 + TP/SL 최적화
-    python combination_tester.py --conditions A,D,GT_A,GT_B --start-date 20231115 --end-date 20251205 --optimize
+    # GT 조건 포함 테스트
+    python combination_tester.py --conditions A,D,GT_A,GT_B --start-date 20231115 --end-date 20251205
 
     # 2~3개 조합만 테스트
     python combination_tester.py --conditions A,B,C,D,E --min-size 2 --max-size 3
 
-    # 로그 파일 저장 (진행상황 + 최종결과)
-    python combination_tester.py --conditions A,B,C,D --log --start-date 20231115 --end-date 20251205
+    # 필수 조건 고정 + 나머지 조합 테스트 (A AND B 고정, C,D,E 중 조합)
+    python combination_tester.py --required A,B --conditions C,D,E --min-size 1 --max-size 2
+
+[2] TP/SL 최적화 모드
+--------------------------------------------------------------------------------
+    # 각 조합별 최적 TP/SL 자동 탐색
+    python combination_tester.py --conditions A,D,GT_A --optimize --tp-min 5 --tp-max 15 --sl-min -7 --sl-max -3
+
+[3] 파라미터 그리드 테스트 (--param-grid)
+--------------------------------------------------------------------------------
+    # 단일 조건 파라미터 최적화
+    python combination_tester.py --conditions H --param-grid "H.smart_money_turnover:5,10,15;H.support_margin:0.02,0.03"
+
+    # 여러 조건 파라미터 동시 테스트
+    python combination_tester.py --conditions A,D,H --param-grid "A.days:2,3,5;H.smart_money_turnover:5,10"
+
+    # 조건명 생략 시 모든 조건에 해당 파라미터 적용
+    python combination_tester.py --conditions A,B --param-grid "days:2,3,5"
+
+[4] 2단계 자동 최적화 (--auto-optimize)
+--------------------------------------------------------------------------------
+    [1단계] 각 조건별 파라미터 최적화 (DEFAULT_PARAM_GRIDS 기반)
+    [2단계] 최적 파라미터로 조건 조합 테스트
+
+    # 자동 최적화 실행
+    python combination_tester.py --conditions A,D,H,I --auto-optimize --start-date 20240101 --end-date 20241231
+
+    # 자동 최적화 후 default.json에 최적 파라미터 저장
+    python combination_tester.py --conditions H,I --auto-optimize --update-defaults --start-date 20240101 --end-date 20241231
+
+[5] 트레일링스탑 / 타임컷 옵션
+--------------------------------------------------------------------------------
+    # 트레일링스탑: 5% 수익 시 활성화, 고점 대비 3% 하락 시 청산
+    python combination_tester.py --conditions A,D --trailing-start 5 --trailing-offset 3
+
+    # 타임컷: 3일 후 수익률 2% 미만 시 청산
+    python combination_tester.py --conditions A,D --time-cut-days 3 --time-cut-min-return 2
+
+[6] 로그 저장 및 병렬 처리
+--------------------------------------------------------------------------------
+    # 로그 파일 저장 (logs/ 폴더에 자동 생성)
+    python combination_tester.py --conditions A,B,C,D --log
+
+    # 병렬 처리 (4개 워커)
+    python combination_tester.py --conditions A,B,C,D,E,F --workers 4
+
+================================================================================
+주요 옵션 설명
+================================================================================
+
+조건 관련:
+  --conditions, -c      테스트할 조건 목록 (필수). 예: A,B,C,D 또는 A,D,GT_A,GT_B
+  --required, -r        필수 조건 (모든 조합에 포함). 예: "A AND B" 또는 "A,B"
+  --min-size            최소 조합 크기 (기본: 2)
+  --max-size            최대 조합 크기 (기본: 전체)
+  --min-trades          최소 거래 건수 (기본: 100)
+
+TP/SL 관련:
+  --tp                  익절선 % (기본: 10)
+  --sl                  손절선 % (기본: -5)
+  --max-holding         최대 보유일 (기본: 14)
+  --optimize            TP/SL 최적화 활성화
+  --tp-min, --tp-max    TP 최적화 범위
+  --sl-min, --sl-max    SL 최적화 범위
+  --step                최적화 스텝 (기본: 1)
+
+파라미터 최적화:
+  --param-grid, -pg     파라미터 그리드 테스트
+  --auto-optimize, -ao  2단계 자동 최적화
+  --update-defaults     자동 최적화 후 default.json 업데이트
+
+트레일링/타임컷:
+  --trailing-start      트레일링 시작 수익률 %
+  --trailing-offset     고점 대비 하락 허용폭 %
+  --time-cut-days       타임컷 체크 일수
+  --time-cut-min-return 타임컷 최소 수익률 %
+
+출력/로그:
+  --sort-by             정렬 기준 (win_rate, avg_return)
+  --top                 상위 N개 출력 (기본: 20)
+  --log                 로그 파일 저장
+  --workers, -w         병렬 워커 수 (기본: 1)
 """
 import sys
 import io
@@ -46,6 +132,7 @@ except ImportError:
 
 from condition_engine import ConditionEngine
 from multi_backtester import MultiBacktester
+from itertools import product
 
 
 # ============================================================================
@@ -182,6 +269,250 @@ def load_default_params() -> dict:
         with open(params_path, 'r', encoding='utf-8') as f:
             return json.load(f)
     return {}
+
+
+# ============================================================================
+# 파라미터 그리드 파싱 및 조합 생성
+# ============================================================================
+def parse_param_grid(param_grid_str: str) -> dict:
+    """
+    파라미터 그리드 문자열 파싱
+
+    형식:
+        "param1:val1,val2,val3;param2:val1,val2"
+        "H.smart_money_turnover:5,10,15;H.support_margin:0.02,0.03"
+
+    Returns:
+        {
+            'H': {'smart_money_turnover': [5, 10, 15], 'support_margin': [0.02, 0.03]},
+            ...
+        }
+        또는 조건 지정 없으면:
+        {
+            None: {'param1': [val1, val2], 'param2': [val1, val2]}
+        }
+    """
+    if not param_grid_str:
+        return {}
+
+    result = {}
+
+    # 세미콜론으로 파라미터 분리
+    for param_spec in param_grid_str.split(';'):
+        param_spec = param_spec.strip()
+        if not param_spec or ':' not in param_spec:
+            continue
+
+        param_part, values_part = param_spec.split(':', 1)
+        param_part = param_part.strip()
+        values_part = values_part.strip()
+
+        # 조건명.파라미터명 형식인지 확인
+        if '.' in param_part:
+            condition, param_name = param_part.split('.', 1)
+            condition = condition.upper()
+        else:
+            # 조건 지정 없으면 모든 조건에 적용
+            condition = None
+            param_name = param_part
+
+        # 값 파싱 (숫자로 변환 시도)
+        values = []
+        for v in values_part.split(','):
+            v = v.strip()
+            try:
+                # 정수 시도
+                if '.' not in v:
+                    values.append(int(v))
+                else:
+                    values.append(float(v))
+            except ValueError:
+                # bool 처리
+                if v.lower() == 'true':
+                    values.append(True)
+                elif v.lower() == 'false':
+                    values.append(False)
+                else:
+                    values.append(v)
+
+        # 결과에 추가
+        if condition not in result:
+            result[condition] = {}
+        result[condition][param_name] = values
+
+    return result
+
+
+def generate_param_combinations(param_grid: dict, base_params: dict, conditions: list[str]) -> list[dict]:
+    """
+    파라미터 그리드에서 모든 조합 생성
+
+    Args:
+        param_grid: parse_param_grid() 결과
+        base_params: default.json 기본 파라미터
+        conditions: 테스트 대상 조건 목록
+
+    Returns:
+        파라미터 조합 리스트, 각 항목은 {condition: {param: value}} 형태
+    """
+    if not param_grid:
+        return [base_params.copy()]
+
+    # 파라미터 키-값 리스트 생성
+    param_keys = []  # [(condition, param_name), ...]
+    param_values = []  # [[val1, val2], [val1, val2, val3], ...]
+
+    for condition, params in param_grid.items():
+        for param_name, values in params.items():
+            if condition is None:
+                # 조건 미지정: 해당 파라미터를 가진 모든 조건에 적용
+                for cond in conditions:
+                    cond_upper = cond.upper()
+                    if cond_upper in base_params and param_name in base_params[cond_upper]:
+                        param_keys.append((cond_upper, param_name))
+                        param_values.append(values)
+            else:
+                param_keys.append((condition, param_name))
+                param_values.append(values)
+
+    if not param_keys:
+        return [base_params.copy()]
+
+    # 모든 조합 생성
+    combinations_list = []
+    for combo in product(*param_values):
+        # 기본 파라미터 복사
+        new_params = {}
+        for cond, params in base_params.items():
+            new_params[cond] = params.copy() if isinstance(params, dict) else params
+
+        # 조합 값 적용
+        for (condition, param_name), value in zip(param_keys, combo):
+            if condition in new_params:
+                new_params[condition][param_name] = value
+
+        combinations_list.append(new_params)
+
+    return combinations_list
+
+
+def get_param_diff_str(params: dict, base_params: dict, conditions: list[str]) -> str:
+    """파라미터 차이를 문자열로 반환 (변경된 것만)"""
+    diffs = []
+    for cond in conditions:
+        cond_upper = cond.upper()
+        if cond_upper not in params or cond_upper not in base_params:
+            continue
+
+        for param_name, value in params[cond_upper].items():
+            if param_name == 'description':
+                continue
+            base_value = base_params.get(cond_upper, {}).get(param_name)
+            if base_value != value:
+                diffs.append(f"{cond_upper}.{param_name}={value}")
+
+    return ', '.join(diffs) if diffs else "(기본값)"
+
+
+# ============================================================================
+# 조건별 기본 파라미터 그리드 (자동 최적화용)
+# ============================================================================
+DEFAULT_PARAM_GRIDS = {
+    'A': {
+        'days': [2, 3, 5]
+    },
+    'B': {
+        'days': [20, 40, 60]
+    },
+    'C': {
+        'top_n': [50, 100, 200],
+        'min_rate': [0.0, 1.0, 3.0]
+    },
+    'D': {
+        'short': [5, 10, 20],
+        'mid': [20, 40, 60],
+        'long': [60, 90, 120]
+    },
+    'E': {
+        'days': [20, 40, 60],
+        'min_pct': [-10.0, -5.0, -3.0],
+        'max_pct': [0.0, 3.0, 5.0]
+    },
+    'F': {
+        'compare_days': [3, 5, 10],
+        'min_ratio': [150, 200, 300]
+    },
+    'G': {
+        'min_rate': [3.0, 5.0, 10.0],
+        'max_rate': [50.0, 100.0, 500.0]
+    },
+    'H': {
+        'smart_money_turnover': [5.0, 10.0, 15.0],
+        'support_margin': [0.02, 0.03, 0.05],
+        'min_trade_value': [300000000, 500000000, 1000000000]
+    },
+    'I': {
+        'disparity_min': [1.08, 1.10, 1.12, 1.15],
+        'disparity_max': [1.20, 1.25, 1.30],
+        'min_turnover': [2.0, 3.0, 5.0]
+    },
+    'GT_A': {
+        'macd_fast': [9, 12, 15],
+        'macd_slow': [20, 26, 30]
+    },
+    'GT_B': {
+        'rsi_period': [7, 14, 21],
+        'rsi_oversold': [25.0, 30.0, 35.0]
+    },
+    'GT_C': {
+        'rsi_overbought': [65.0, 70.0, 75.0]
+    },
+    'GT_D': {
+        'lookback_days': [10, 20, 30],
+        'bounce_pct': [0.02, 0.03, 0.05]
+    },
+    'GT_D2': {
+        'short_period': [3, 5, 7],
+        'long_period': [15, 20, 30]
+    },
+    'GT_E': {
+        'short_period': [5, 10, 20],
+        'long_period': [40, 60, 120],
+        'convergence_pct': [0.02, 0.03, 0.05]
+    },
+    'GT_F': {
+        'avg_period': [10, 20, 30],
+        'volume_multiplier': [1.5, 2.0, 3.0]
+    }
+}
+
+
+def get_default_param_grid(condition: str) -> dict:
+    """조건에 대한 기본 파라미터 그리드 반환"""
+    return DEFAULT_PARAM_GRIDS.get(condition.upper(), {})
+
+
+def update_default_json(optimized_params: dict, json_path: str = None):
+    """최적화된 파라미터로 default.json 업데이트"""
+    if json_path is None:
+        json_path = os.path.join(os.path.dirname(__file__), 'conditions', 'default.json')
+
+    # 기존 파일 로드
+    with open(json_path, 'r', encoding='utf-8') as f:
+        current_params = json.load(f)
+
+    # 업데이트
+    for condition, params in optimized_params.items():
+        if condition in current_params:
+            for param_name, value in params.items():
+                if param_name != 'description':
+                    current_params[condition][param_name] = value
+
+    # 저장
+    with open(json_path, 'w', encoding='utf-8') as f:
+        json.dump(current_params, f, ensure_ascii=False, indent=2)
+
+    return json_path
 
 
 # ============================================================================
@@ -459,6 +790,385 @@ def run_parallel_tests(
     return results
 
 
+def run_param_grid_tests(
+    engine: ConditionEngine,
+    base_params: dict,
+    param_combinations: list[dict],
+    condition_expr: str,
+    conditions: list[str],
+    start_date: str,
+    end_date: str,
+    tp: float,
+    sl: float,
+    min_trades: int,
+    max_holding: int = 14,
+    trailing_start: float = None,
+    trailing_offset: float = None,
+    time_cut_days: int = None,
+    time_cut_min_return: float = None
+) -> list[dict]:
+    """
+    파라미터 조합 테스트 실행
+
+    Args:
+        param_combinations: generate_param_combinations() 결과
+        condition_expr: 조건 표현식 (예: "A AND D AND H")
+        conditions: 조건 목록
+
+    Returns:
+        list[dict]: 각 파라미터 조합의 결과
+    """
+    results = []
+    total = len(param_combinations)
+    start_time = time.time()
+
+    print(f"\n[파라미터 조합 테스트] 조건: {condition_expr}")
+    print(f"   총 {total}개 파라미터 조합")
+    print("-" * 80)
+
+    # 백테스터 생성
+    backtester = MultiBacktester(
+        engine,
+        stop_loss=sl,
+        take_profit=tp,
+        max_holding_days=max_holding,
+        trailing_start=trailing_start,
+        trailing_offset=trailing_offset,
+        time_cut_days=time_cut_days,
+        time_cut_min_return=time_cut_min_return
+    )
+
+    for i, params in enumerate(param_combinations, 1):
+        param_diff = get_param_diff_str(params, base_params, conditions)
+        prefix = f"   [{i:>3}/{total}] {param_diff:<50} "
+
+        def make_progress_callback(p):
+            def callback(current, total_days):
+                print_inner_progress(current, total_days, p)
+            return callback
+
+        progress_cb = make_progress_callback(prefix)
+
+        report = backtester.run(start_date, end_date, condition_expr, params,
+                               verbose=False, progress_callback=progress_cb)
+
+        elapsed = time.time() - start_time
+
+        # 결과 저장
+        result = {
+            'expression': condition_expr,
+            'params': param_diff,
+            'params_dict': {k: v for k, v in params.items() if k in [c.upper() for c in conditions]},
+            'total_trades': report.total_trades if report else 0,
+            'win_rate': report.win_rate if report else 0,
+            'avg_return': report.avg_return if report else 0,
+            'total_return': report.total_return if report else 0,
+            'avg_holding_days': report.avg_holding_days if report else 0,
+            'tp': tp,
+            'sl': sl,
+            'valid': (report.total_trades >= min_trades) if report else False
+        }
+        results.append(result)
+
+        # 프로그레스 바 출력
+        print_progress_bar(i, total, elapsed)
+
+        # 상세 결과 출력
+        status = "OK" if result['valid'] else f"거래수 부족({result['total_trades']}건)"
+        print(f"\n   [{i:>3}/{total}] {param_diff:<50} → "
+              f"거래 {result['total_trades']:>4}건, 승률 {result['win_rate']:>5.1f}%, "
+              f"수익률 {result['avg_return']:>+6.2f}% ({status})")
+
+    print()  # 마지막 줄바꿈
+    return results
+
+
+def run_auto_optimize(
+    engine: ConditionEngine,
+    base_params: dict,
+    conditions: list[str],
+    start_date: str,
+    end_date: str,
+    tp: float,
+    sl: float,
+    min_trades: int,
+    max_holding: int = 14,
+    trailing_start: float = None,
+    trailing_offset: float = None,
+    time_cut_days: int = None,
+    time_cut_min_return: float = None,
+    top_n_candidates: int = 3,
+    combo_min_size: int = 2,
+    combo_max_size: int = None
+) -> dict:
+    """
+    2단계 자동 최적화 실행
+
+    [1단계] 각 조건별 파라미터 최적화 (단일 조건으로 테스트)
+    [2단계] 최적 파라미터로 조건 조합 테스트
+
+    Args:
+        conditions: 최적화할 조건 목록
+        top_n_candidates: 1단계에서 각 조건별 상위 N개 후보 선정
+        combo_min_size: 2단계 조합 최소 크기
+        combo_max_size: 2단계 조합 최대 크기
+
+    Returns:
+        {
+            'phase1_results': {조건: [결과들]},
+            'phase2_results': [조합 결과들],
+            'optimized_params': {조건: {최적 파라미터들}},
+            'best_combination': 최고 조합 결과
+        }
+    """
+    results = {
+        'phase1_results': {},
+        'phase2_results': [],
+        'optimized_params': {},
+        'best_combination': None
+    }
+
+    print("\n" + "=" * 80)
+    print("   [1단계] 개별 조건 파라미터 최적화")
+    print("=" * 80)
+
+    # 백테스터 생성
+    backtester = MultiBacktester(
+        engine,
+        stop_loss=sl,
+        take_profit=tp,
+        max_holding_days=max_holding,
+        trailing_start=trailing_start,
+        trailing_offset=trailing_offset,
+        time_cut_days=time_cut_days,
+        time_cut_min_return=time_cut_min_return
+    )
+
+    phase1_start = time.time()
+
+    # 각 조건별 파라미터 최적화
+    for cond_idx, condition in enumerate(conditions, 1):
+        cond_upper = condition.upper()
+        param_grid = get_default_param_grid(cond_upper)
+
+        if not param_grid:
+            print(f"\n   [{cond_idx}/{len(conditions)}] {cond_upper}: 파라미터 그리드 없음, 건너뜀")
+            results['optimized_params'][cond_upper] = base_params.get(cond_upper, {}).copy()
+            continue
+
+        print(f"\n   [{cond_idx}/{len(conditions)}] {cond_upper} 파라미터 최적화")
+        print(f"      파라미터: {list(param_grid.keys())}")
+
+        # 파라미터 조합 생성
+        param_keys = list(param_grid.keys())
+        param_values = [param_grid[k] for k in param_keys]
+        total_combos = 1
+        for pv in param_values:
+            total_combos *= len(pv)
+        print(f"      조합 수: {total_combos}개")
+
+        cond_results = []
+
+        for combo_idx, combo in enumerate(product(*param_values), 1):
+            # 파라미터 설정
+            test_params = {}
+            for k, v in base_params.items():
+                test_params[k] = v.copy() if isinstance(v, dict) else v
+
+            for param_name, value in zip(param_keys, combo):
+                if cond_upper in test_params:
+                    test_params[cond_upper][param_name] = value
+
+            # 단일 조건 테스트
+            report = backtester.run(start_date, end_date, cond_upper, test_params, verbose=False)
+
+            param_str = ', '.join(f"{k}={v}" for k, v in zip(param_keys, combo))
+
+            result = {
+                'params': dict(zip(param_keys, combo)),
+                'params_str': param_str,
+                'total_trades': report.total_trades if report else 0,
+                'win_rate': report.win_rate if report else 0,
+                'avg_return': report.avg_return if report else 0,
+                'valid': (report.total_trades >= min_trades) if report else False
+            }
+            cond_results.append(result)
+
+            # 진행률 표시
+            print(f"\r      [{combo_idx}/{total_combos}] {param_str:<40} → "
+                  f"거래 {result['total_trades']:>4}건, 수익률 {result['avg_return']:>+6.2f}%",
+                  end='', flush=True)
+
+        print()  # 줄바꿈
+
+        # 유효한 결과만 정렬
+        valid_results = [r for r in cond_results if r['valid']]
+        valid_results.sort(key=lambda x: x['avg_return'], reverse=True)
+
+        results['phase1_results'][cond_upper] = valid_results[:top_n_candidates]
+
+        # 최적 파라미터 저장
+        if valid_results:
+            best = valid_results[0]
+            optimized = base_params.get(cond_upper, {}).copy()
+            optimized.update(best['params'])
+            results['optimized_params'][cond_upper] = optimized
+            print(f"      [BEST] {best['params_str']} → 수익률 {best['avg_return']:+.2f}%")
+        else:
+            # 유효 결과 없으면 기본값 사용
+            results['optimized_params'][cond_upper] = base_params.get(cond_upper, {}).copy()
+            print(f"      [WARN] 유효한 결과 없음, 기본값 사용")
+
+    phase1_elapsed = time.time() - phase1_start
+    print(f"\n   [1단계 완료] 소요시간: {int(phase1_elapsed//60)}분 {int(phase1_elapsed%60)}초")
+
+    # =========================================================================
+    # 2단계: 최적 파라미터로 조합 테스트
+    # =========================================================================
+    print("\n" + "=" * 80)
+    print("   [2단계] 최적 파라미터로 조건 조합 테스트")
+    print("=" * 80)
+
+    # 최적화된 파라미터로 새 params 생성
+    optimized_full_params = base_params.copy()
+    for cond, params in results['optimized_params'].items():
+        optimized_full_params[cond] = params
+
+    # 조합 생성
+    if combo_max_size is None:
+        combo_max_size = len(conditions)
+
+    combos = generate_combinations(conditions, combo_min_size, combo_max_size)
+    print(f"   조합 수: {len(combos)}개 ({combo_min_size}~{combo_max_size}개 조건)")
+
+    phase2_start = time.time()
+    phase2_results = []
+
+    for combo_idx, expr in enumerate(combos, 1):
+        report = backtester.run(start_date, end_date, expr, optimized_full_params, verbose=False)
+
+        result = {
+            'expression': expr,
+            'total_trades': report.total_trades if report else 0,
+            'win_rate': report.win_rate if report else 0,
+            'avg_return': report.avg_return if report else 0,
+            'total_return': report.total_return if report else 0,
+            'avg_holding_days': report.avg_holding_days if report else 0,
+            'valid': (report.total_trades >= min_trades) if report else False
+        }
+        phase2_results.append(result)
+
+        status = "OK" if result['valid'] else f"거래수 부족"
+        print(f"   [{combo_idx:>3}/{len(combos)}] {expr:<35} → "
+              f"거래 {result['total_trades']:>4}건, 승률 {result['win_rate']:>5.1f}%, "
+              f"수익률 {result['avg_return']:>+6.2f}% ({status})")
+
+    phase2_elapsed = time.time() - phase2_start
+    print(f"\n   [2단계 완료] 소요시간: {int(phase2_elapsed//60)}분 {int(phase2_elapsed%60)}초")
+
+    results['phase2_results'] = phase2_results
+
+    # 최고 조합 선정
+    valid_combos = [r for r in phase2_results if r['valid']]
+    if valid_combos:
+        valid_combos.sort(key=lambda x: x['avg_return'], reverse=True)
+        results['best_combination'] = valid_combos[0]
+
+    return results
+
+
+def print_auto_optimize_results(results: dict, conditions: list[str]):
+    """자동 최적화 결과 출력"""
+    print("\n" + "=" * 100)
+    print("   [자동 최적화 결과 요약]")
+    print("=" * 100)
+
+    # 1단계 결과
+    print("\n   [1단계] 개별 조건 최적 파라미터")
+    print("-" * 100)
+    for cond in conditions:
+        cond_upper = cond.upper()
+        phase1 = results['phase1_results'].get(cond_upper, [])
+        optimized = results['optimized_params'].get(cond_upper, {})
+
+        if phase1:
+            best = phase1[0]
+            print(f"   {cond_upper}: {best['params_str']}")
+            print(f"         → 거래 {best['total_trades']}건, 수익률 {best['avg_return']:+.2f}%")
+        else:
+            print(f"   {cond_upper}: (기본값 사용)")
+
+    # 2단계 결과
+    print("\n   [2단계] 조건 조합 테스트 결과 (Top 10)")
+    print("-" * 100)
+    print("   순위 조건 조합                           거래수    승률   평균수익률    총수익률  평균보유")
+    print("-" * 100)
+
+    valid_results = [r for r in results['phase2_results'] if r['valid']]
+    valid_results.sort(key=lambda x: x['avg_return'], reverse=True)
+
+    for i, r in enumerate(valid_results[:10], 1):
+        print(f"   {i:^5}{r['expression']:<35}{r['total_trades']:>8}{r['win_rate']:>7.1f}%"
+              f"{r['avg_return']:>+11.2f}%{r['total_return']:>+11.1f}%{r['avg_holding_days']:>7.1f}일")
+
+    print("=" * 100)
+
+    # 최고 조합 강조
+    if results['best_combination']:
+        best = results['best_combination']
+        print(f"\n   [BEST] {best['expression']}")
+        print(f"          거래 {best['total_trades']}건, 승률 {best['win_rate']:.1f}%, "
+              f"평균수익률 {best['avg_return']:+.2f}%, 평균보유 {best['avg_holding_days']:.1f}일")
+        print("=" * 100)
+
+
+def print_param_grid_results(
+    results: list[dict],
+    sort_by: str = 'avg_return',
+    top_n: int = 20,
+    min_trades: int = 100
+):
+    """파라미터 조합 테스트 결과 출력"""
+    # 유효한 결과만 필터링
+    valid_results = [r for r in results if r['valid']]
+    invalid_results = [r for r in results if not r['valid']]
+
+    # 정렬
+    valid_results.sort(key=lambda x: x[sort_by], reverse=True)
+
+    sort_name = "평균수익률" if sort_by == 'avg_return' else "승률"
+
+    print("\n" + "=" * 110)
+    print(f"   [파라미터 조합 결과 - {sort_name} 순]")
+    print("=" * 110)
+    print("   순위 파라미터 조합                                       거래수    승률   평균수익률    총수익률  평균보유")
+    print("-" * 110)
+
+    for i, r in enumerate(valid_results[:top_n], 1):
+        print(f"   {i:^5}{r['params']:<55}{r['total_trades']:>8}{r['win_rate']:>7.1f}%"
+              f"{r['avg_return']:>+11.2f}%{r['total_return']:>+11.1f}%{r['avg_holding_days']:>7.1f}일")
+
+    print("=" * 110)
+
+    # 필터링된 조합 출력
+    if invalid_results:
+        print(f"\n[필터링된 조합] (거래수 < {min_trades}건)")
+        for r in invalid_results[:5]:
+            print(f"   - {r['params']}: {r['total_trades']}건")
+        if len(invalid_results) > 5:
+            print(f"   ... 외 {len(invalid_results) - 5}개")
+
+    # 최고 조합 강조
+    if valid_results:
+        best = valid_results[0]
+        print("\n" + "=" * 110)
+        print(f"   [BEST] {best['expression']}")
+        print(f"          파라미터: {best['params']}")
+        print(f"          거래 {best['total_trades']}건, 승률 {best['win_rate']:.1f}%, "
+              f"평균수익률 {best['avg_return']:+.2f}%, 평균보유 {best['avg_holding_days']:.1f}일")
+        print("=" * 110)
+
+
 def run_optimized_tests(
     engine: ConditionEngine,
     params: dict,
@@ -653,6 +1363,12 @@ def parse_args():
 
   # 필수 조건 + 조합 테스트 (A AND B는 고정, C,D,E 중 1~2개 조합)
   python combination_tester.py --required A,B --conditions C,D,E --min-size 1 --max-size 2
+
+  # 파라미터 조합 테스트 (조건 H의 파라미터 최적화)
+  python combination_tester.py --conditions H --param-grid "H.smart_money_turnover:5,10,15;H.support_margin:0.02,0.03"
+
+  # 여러 조건의 파라미터 동시 테스트
+  python combination_tester.py --conditions A,D,H --param-grid "A.days:2,3,5;H.smart_money_turnover:5,10"
         """
     )
 
@@ -707,6 +1423,17 @@ def parse_args():
                         help='SL 최적화 최대값 (기본: -3)')
     parser.add_argument('--step', type=float, default=1.0,
                         help='TP/SL 최적화 스텝 (기본: 1)')
+
+    # 파라미터 그리드 옵션
+    parser.add_argument('--param-grid', '-pg', type=str, default=None,
+                        help='파라미터 그리드 테스트. 형식: "조건.파라미터:값1,값2;조건.파라미터:값1,값2" '
+                             '예: "H.smart_money_turnover:5,10,15;H.support_margin:0.02,0.03"')
+
+    # 자동 최적화 옵션
+    parser.add_argument('--auto-optimize', '-ao', action='store_true',
+                        help='2단계 자동 최적화: (1) 각 조건별 파라미터 최적화 → (2) 최적 파라미터로 조합 테스트')
+    parser.add_argument('--update-defaults', action='store_true',
+                        help='자동 최적화 후 최적 파라미터를 default.json에 저장 (--auto-optimize와 함께 사용)')
 
     # 출력 옵션
     parser.add_argument('--sort-by', choices=['win_rate', 'avg_return'], default='avg_return',
@@ -780,12 +1507,29 @@ def main():
             print(f"   사용 가능한 조건: {', '.join(sorted(valid_conditions))}")
             sys.exit(1)
 
+    # 파라미터 그리드 파싱
+    param_grid = parse_param_grid(args.param_grid) if args.param_grid else None
+    param_grid_mode = param_grid is not None and len(param_grid) > 0
+
     # 조합 생성
     max_size = args.max_size if args.max_size else len(conditions)
-    combos = generate_combinations(conditions, args.min_size, max_size, required=required_expr)
+
+    if param_grid_mode:
+        # 파라미터 그리드 모드: 조건 조합은 하나로 고정
+        if required_expr:
+            condition_expr = required_expr + ' AND ' + ' AND '.join(conditions)
+        else:
+            condition_expr = ' AND '.join(conditions)
+        combos = [condition_expr]  # 조건 조합은 1개
+    else:
+        combos = generate_combinations(conditions, args.min_size, max_size, required=required_expr)
 
     print("=" * 80)
-    if args.optimize:
+    if args.auto_optimize:
+        print("   2단계 자동 최적화 모드")
+    elif param_grid_mode:
+        print("   파라미터 조합 테스트")
+    elif args.optimize:
         print("   조건 조합 테스트 (TP/SL 최적화 모드)")
     else:
         print("   조건 조합 테스트")
@@ -806,8 +1550,20 @@ def main():
     if args.time_cut_days is not None and args.time_cut_min_return is not None:
         print(f"   타임컷: {args.time_cut_days}일 후 수익률 {args.time_cut_min_return:+.1f}% 미만 시 청산")
     print(f"   최소 거래수: {args.min_trades}건")
-    print(f"   조합 크기: {args.min_size} ~ {max_size}개")
-    print(f"   총 조합 수: {len(combos)}개")
+
+    if args.auto_optimize:
+        # 자동 최적화 모드 정보 출력
+        print(f"   [1단계] 각 조건별 파라미터 최적화 (DEFAULT_PARAM_GRIDS)")
+        print(f"   [2단계] 최적 파라미터로 조합 테스트")
+        if args.update_defaults:
+            print(f"   -> 최적화 후 default.json 자동 업데이트")
+    elif param_grid_mode:
+        # 파라미터 그리드 정보 출력
+        print(f"   조건 표현식: {condition_expr}")
+        print(f"   파라미터 그리드: {args.param_grid}")
+    else:
+        print(f"   조합 크기: {args.min_size} ~ {max_size}개")
+        print(f"   총 조합 수: {len(combos)}개")
 
     # 워커 수 결정
     workers = args.workers
@@ -817,8 +1573,8 @@ def main():
         print(f"   병렬 처리: {workers}개 워커")
     print("=" * 80)
 
-    # 병렬 모드 여부 결정 (최적화 모드는 아직 병렬 미지원)
-    use_parallel = workers > 1 and not args.optimize
+    # 병렬 모드 여부 결정 (최적화 모드, 파라미터 그리드 모드, 자동 최적화 모드는 아직 병렬 미지원)
+    use_parallel = workers > 1 and not args.optimize and not param_grid_mode and not args.auto_optimize
 
     if use_parallel:
         # 병렬 모드: 각 워커에서 데이터 로드
@@ -837,11 +1593,100 @@ def main():
         params = load_default_params()
         print(f"   -> 조건 파라미터 로드 완료")
 
+    # 자동 최적화 모드 확인
+    if args.auto_optimize:
+        print("\n[2] 2단계 자동 최적화 시작...")
+        start_time = time.time()
+
+        auto_results = run_auto_optimize(
+            engine, params, conditions,
+            args.start_date, args.end_date,
+            args.tp, args.sl,
+            args.min_trades,
+            args.max_holding,
+            args.trailing_start,
+            args.trailing_offset,
+            args.time_cut_days,
+            args.time_cut_min_return,
+            top_n_candidates=3,
+            combo_min_size=args.min_size,
+            combo_max_size=args.max_size
+        )
+
+        elapsed = time.time() - start_time
+        elapsed_min = int(elapsed // 60)
+        elapsed_sec = int(elapsed % 60)
+        print(f"\n   [완료] 총 소요시간: {elapsed_min}분 {elapsed_sec}초")
+
+        # 결과 출력
+        print_auto_optimize_results(auto_results, conditions)
+
+        # default.json 업데이트 옵션
+        if args.update_defaults and auto_results['optimized_params']:
+            json_path = update_default_json(auto_results['optimized_params'])
+            print(f"\n[default.json 업데이트 완료]")
+            print(f"   파일: {json_path}")
+            print(f"   업데이트된 조건: {', '.join(auto_results['optimized_params'].keys())}")
+
+        # JSON 결과 저장 (로깅 활성화 시)
+        if args.log and json_file:
+            args_dict = {
+                'mode': 'auto_optimize',
+                'conditions': args.conditions,
+                'start_date': args.start_date,
+                'end_date': args.end_date,
+                'tp': args.tp,
+                'sl': args.sl,
+                'max_holding': args.max_holding,
+                'min_trades': args.min_trades,
+                'elapsed_seconds': elapsed
+            }
+            # auto_results를 직렬화 가능하게 변환
+            serializable_results = []
+            for phase2_result in auto_results.get('phase2_results', []):
+                serializable_results.append(phase2_result)
+
+            save_results_json(serializable_results, json_file, args_dict)
+            print(f"\n[로그 저장 완료]")
+            print(f"   로그 파일: {log_file}")
+            print(f"   결과 JSON: {json_file}")
+
+        # 로거 정리
+        if logger:
+            sys.stdout = logger.terminal
+            logger.close()
+
+        return  # 자동 최적화 모드 종료
+
     # 테스트 실행
-    print("\n[2] 조합 테스트 시작...")
+    if param_grid_mode:
+        print("\n[2] 파라미터 조합 테스트 시작...")
+    else:
+        print("\n[2] 조합 테스트 시작...")
     start_time = time.time()
 
-    if args.optimize:
+    if param_grid_mode:
+        # 파라미터 그리드 테스트
+        # 모든 조건 목록 생성 (required + conditions)
+        all_conditions = required_conditions + conditions if required_conditions else conditions
+
+        # 파라미터 조합 생성
+        param_combinations = generate_param_combinations(param_grid, params, all_conditions)
+        print(f"   총 {len(param_combinations)}개 파라미터 조합 생성됨")
+
+        results = run_param_grid_tests(
+            engine, params, param_combinations,
+            condition_expr, all_conditions,
+            args.start_date, args.end_date,
+            args.tp, args.sl,
+            args.min_trades,
+            args.max_holding,
+            args.trailing_start,
+            args.trailing_offset,
+            args.time_cut_days,
+            args.time_cut_min_return
+        )
+    elif args.optimize:
         results = run_optimized_tests(
             engine, params, combos,
             args.start_date, args.end_date,
@@ -889,13 +1734,21 @@ def main():
     print(f"\n   [완료] 총 소요시간: {elapsed_min}분 {elapsed_sec}초")
 
     # 결과 출력
-    print_results(
-        results,
-        sort_by=args.sort_by,
-        top_n=args.top,
-        min_trades=args.min_trades,
-        optimize_mode=args.optimize
-    )
+    if param_grid_mode:
+        print_param_grid_results(
+            results,
+            sort_by=args.sort_by,
+            top_n=args.top,
+            min_trades=args.min_trades
+        )
+    else:
+        print_results(
+            results,
+            sort_by=args.sort_by,
+            top_n=args.top,
+            min_trades=args.min_trades,
+            optimize_mode=args.optimize
+        )
 
     # JSON 결과 저장 (로깅 활성화 시)
     if args.log and json_file:
@@ -911,6 +1764,7 @@ def main():
             'min_size': args.min_size,
             'max_size': args.max_size,
             'optimize': args.optimize,
+            'param_grid': args.param_grid,
             'trailing_start': args.trailing_start,
             'trailing_offset': args.trailing_offset,
             'time_cut_days': args.time_cut_days,

@@ -1232,24 +1232,34 @@ class ConditionEngine:
         return set(codes)
 
     # =========================================================================
-    # 조건 H: 20일선 눌림목 전략 (Reno_Swing_20MA)
+    # 조건 H: 20일선 눌림목 전략 (Reno_Swing_20MA) - 개선됨
     # =========================================================================
     def condition_H(self, base_date: str,
                     ma_short: int = 20, ma_mid: int = 60, ma_long: int = 120,
                     smart_money_turnover: float = 10.0, smart_money_lookback: int = 20,
                     support_margin: float = 0.03,
+                    support_lower: float = 0.99,
                     volume_dry_ratio: float = 0.7,
+                    min_trade_value: float = 500000000,
+                    require_bullish_candle: bool = True,
+                    require_lower_wick: bool = False,
                     with_details: bool = False):
         """
-        조건 H: 20일선 눌림목 전략 (Reno_Swing_20MA)
+        [개선됨] 조건 H: 20일선 눌림목 전략 (Reno_Swing_20MA)
 
         세력 진입 후 20일선까지 건전한 조정을 받은 종목 (C파동 공략)
+        - 양봉 필터 추가: 떨어지는 칼날 방지
+        - 아래꼬리 필터: 장중 지지 확인
+        - 최소 거래대금: 유동성 부족 종목 제외
 
         조건:
         1. 추세: Close > MA120 AND MA20 > MA60 (상승 추세)
         2. 세력: 최근 20일 내 회전율 10% 이상 발생 이력
-        3. 위치: MA20 <= Close <= MA20 * 1.03 (20일선 지지)
+        3. 위치: MA20 * 0.99 <= Close <= MA20 * 1.03 (20일선 지지, 살짝 이탈 허용)
         4. 거래량: 전일대비 30% 급감 OR 20일 평균 미만 (매도세 소멸)
+        5. 캔들: 양봉(Close >= Open) - 지지 확인
+        6. 아래꼬리: Low < MA20 * 0.99 AND Close > MA20 (선택)
+        7. 최소 거래대금: 5억원 이상 (유동성)
 
         Args:
             base_date: 기준일 (YYYYMMDD)
@@ -1258,8 +1268,12 @@ class ConditionEngine:
             ma_long: 장기 이평 (기본 120)
             smart_money_turnover: 세력 진입 회전율 기준 (기본 10%)
             smart_money_lookback: 세력 진입 탐색 기간 (기본 20일)
-            support_margin: 20일선 대비 허용 마진 (기본 3%)
+            support_margin: 20일선 대비 상단 허용 마진 (기본 3%)
+            support_lower: 20일선 대비 하단 허용 비율 (기본 0.99 = 1% 이탈 허용)
             volume_dry_ratio: 전일대비 거래량 감소 비율 (기본 0.7 = 30% 감소)
+            min_trade_value: 최소 거래대금 (기본 5억원)
+            require_bullish_candle: 양봉 필터 적용 여부 (기본 True)
+            require_lower_wick: 아래꼬리 필터 적용 여부 (기본 False)
             with_details: True면 상세값 dict 반환
 
         Returns:
@@ -1308,7 +1322,10 @@ class ConditionEngine:
 
         # 기준일 값들 추출
         close_day = df_day['종가'].values
+        open_day = df_day['시가'].values
+        low_day = df_day['저가'].values
         vol_day = df_day['거래량'].values
+        trade_value_day = df_day['거래대금'].values if '거래대금' in df_day.columns else np.zeros(len(df_day))
         ma_short_day = ma_short_val.values[day_mask]
         ma_mid_day = ma_mid_val.values[day_mask]
         ma_long_day = ma_long_val.values[day_mask]
@@ -1322,62 +1339,95 @@ class ConditionEngine:
         # 조건 2: 세력 진입 (최근 N일 내 회전율 10% 이상)
         cond_smart_money = max_turnover_day >= smart_money_turnover
 
-        # 조건 3: 위치 (MA20 <= Close <= MA20 * 1.03)
-        cond_position = (close_day >= ma_short_day) & (close_day <= ma_short_day * (1 + support_margin))
+        # 조건 3: 위치 (MA20 * 0.99 <= Close <= MA20 * 1.03) - 살짝 이탈 허용
+        cond_position = (close_day >= ma_short_day * support_lower) & (close_day <= ma_short_day * (1 + support_margin))
 
         # 조건 4: 거래량 급감 (전일대비 30% 급감 OR 20일 평균 미만)
         cond_volume_dry = (vol_day < prev_vol_day * volume_dry_ratio) | (vol_day < vol_ma20_day)
 
+        # 조건 5: 양봉 캔들 (Close >= Open) - 지지 확인
+        if require_bullish_candle:
+            cond_candle = close_day >= open_day
+        else:
+            cond_candle = np.ones(len(df_day), dtype=bool)
+
+        # 조건 6: 아래꼬리 (Low < MA20 * 0.99 AND Close > MA20) - 장중 깼다가 반등
+        if require_lower_wick:
+            cond_lower_wick = (low_day < ma_short_day * support_lower) & (close_day > ma_short_day)
+        else:
+            cond_lower_wick = np.ones(len(df_day), dtype=bool)
+
+        # 조건 7: 최소 거래대금 (유동성 필터)
+        cond_trade_value = trade_value_day >= min_trade_value
+
         # 모든 조건 충족
-        mask = cond_trend & cond_smart_money & cond_position & cond_volume_dry
+        mask = cond_trend & cond_smart_money & cond_position & cond_volume_dry & cond_candle & cond_lower_wick & cond_trade_value
         codes = df_day['종목코드'].values[mask]
 
         if with_details:
             return {
                 code: {
                     '종가': int(close),
+                    '시가': int(op),
+                    '저가': int(low),
                     f'MA{ma_short}': int(mas),
                     f'MA{ma_mid}': int(mam),
                     f'MA{ma_long}': int(mal),
                     '최대회전율': round(mt, 2),
                     '거래량': int(v),
                     '전일거래량': int(pv) if not np.isnan(pv) else 0,
-                    '20일평균거래량': int(vm) if not np.isnan(vm) else 0
+                    '20일평균거래량': int(vm) if not np.isnan(vm) else 0,
+                    '거래대금': int(tv)
                 }
-                for code, close, mas, mam, mal, mt, v, pv, vm in zip(
-                    codes, close_day[mask], ma_short_day[mask], ma_mid_day[mask], ma_long_day[mask],
-                    max_turnover_day[mask], vol_day[mask], prev_vol_day[mask], vol_ma20_day[mask]
+                for code, close, op, low, mas, mam, mal, mt, v, pv, vm, tv in zip(
+                    codes, close_day[mask], open_day[mask], low_day[mask],
+                    ma_short_day[mask], ma_mid_day[mask], ma_long_day[mask],
+                    max_turnover_day[mask], vol_day[mask], prev_vol_day[mask], vol_ma20_day[mask],
+                    trade_value_day[mask]
                 )
             }
         return set(codes)
 
     # =========================================================================
-    # 조건 I: 5일선 급등주 전략 (Reno_Momentum_5MA)
+    # 조건 I: 5일선 급등주 전략 (Reno_Momentum_5MA) - 개선됨
     # =========================================================================
     def condition_I(self, base_date: str,
                     ma_short: int = 5, ma_mid: int = 20,
-                    disparity_min: float = 1.15,
+                    disparity_min: float = 1.10,
+                    disparity_max: float = 1.25,
                     support_margin: float = 0.02,
                     min_turnover: float = 3.0,
+                    min_trade_value: float = 1000000000,
+                    require_bullish_candle: bool = True,
                     with_details: bool = False):
         """
-        조건 I: 5일선 급등주 전략 (Reno_Momentum_5MA)
+        [개선됨] 조건 I: 5일선 급등주 전략 (Reno_Momentum_5MA)
 
         강한 모멘텀으로 상승 중인 종목이 5일선에서 짧은 조정 후 재상승 공략
+        - 이격도 기준 완화: 15% → 10% (더 일찍 진입)
+        - 이격도 상한 추가: 25% (과열 구간 제외)
+        - 양봉 필터 추가: 상투 잡기 방지
+        - 최소 거래대금: 10억원 (급등주는 유동성 필수)
 
         조건:
-        1. 모멘텀: Close >= MA20 * 1.15 (20일선 대비 15% 이상 급등)
-        2. 위치: MA5 <= Close <= MA5 * 1.02 (5일선 지지)
-        3. 수급: 회전율 >= 3% (시장 관심 지속)
-        4. 매물소화: 거래량 < 전일 거래량 (과열 방지)
+        1. 모멘텀: Close >= MA20 * 1.10 (20일선 대비 10% 이상 급등)
+        2. 과열방지: Close <= MA20 * 1.25 (25% 이상 급등은 위험)
+        3. 위치: MA5 <= Close <= MA5 * 1.02 (5일선 지지)
+        4. 수급: 회전율 >= 3% (시장 관심 지속)
+        5. 매물소화: 거래량 < 전일 거래량 (과열 방지)
+        6. 캔들: 양봉(Close >= Open) - 5일선 위에서 매수세 확인
+        7. 최소 거래대금: 10억원 이상 (유동성)
 
         Args:
             base_date: 기준일 (YYYYMMDD)
             ma_short: 단기 이평 (기본 5)
             ma_mid: 중기 이평 (기본 20)
-            disparity_min: 20일선 대비 최소 이격도 (기본 1.15 = 15%)
+            disparity_min: 20일선 대비 최소 이격도 (기본 1.10 = 10%)
+            disparity_max: 20일선 대비 최대 이격도 (기본 1.25 = 25%)
             support_margin: 5일선 대비 허용 마진 (기본 2%)
             min_turnover: 최소 회전율 (기본 3%)
+            min_trade_value: 최소 거래대금 (기본 10억원)
+            require_bullish_candle: 양봉 필터 적용 여부 (기본 True)
             with_details: True면 상세값 dict 반환
 
         Returns:
@@ -1406,7 +1456,9 @@ class ConditionEngine:
 
         # 기준일 값들 추출
         close_day = df_day['종가'].values
+        open_day = df_day['시가'].values
         vol_day = df_day['거래량'].values
+        trade_value_day = df_day['거래대금'].values if '거래대금' in df_day.columns else np.zeros(len(df_day))
         ma_short_day = ma_short_val.values[day_mask]
         ma_mid_day = ma_mid_val.values[day_mask]
         prev_vol_day = prev_volume.values[day_mask]
@@ -1421,36 +1473,51 @@ class ConditionEngine:
         with np.errstate(divide='ignore', invalid='ignore'):
             disparity = np.where(ma_mid_day > 0, close_day / ma_mid_day, 0)
 
-        # 조건 1: 모멘텀 (Close >= MA20 * 1.15)
+        # 조건 1: 모멘텀 (Close >= MA20 * 1.10)
         cond_momentum = disparity >= disparity_min
 
-        # 조건 2: 위치 (MA5 <= Close <= MA5 * 1.02)
+        # 조건 2: 과열방지 (Close <= MA20 * 1.25)
+        cond_not_too_high = disparity <= disparity_max
+
+        # 조건 3: 위치 (MA5 <= Close <= MA5 * 1.02)
         cond_position = (close_day >= ma_short_day) & (close_day <= ma_short_day * (1 + support_margin))
 
-        # 조건 3: 수급 (회전율 >= 3%)
+        # 조건 4: 수급 (회전율 >= 3%)
         cond_active = turnover_day >= min_turnover
 
-        # 조건 4: 매물소화 (거래량 < 전일 거래량)
+        # 조건 5: 매물소화 (거래량 < 전일 거래량)
         cond_volume_control = vol_day < prev_vol_day
 
+        # 조건 6: 양봉 캔들 (Close >= Open) - 5일선 위에서 매수세 확인
+        if require_bullish_candle:
+            cond_candle = close_day >= open_day
+        else:
+            cond_candle = np.ones(len(df_day), dtype=bool)
+
+        # 조건 7: 최소 거래대금 (유동성 필터)
+        cond_trade_value = trade_value_day >= min_trade_value
+
         # 모든 조건 충족
-        mask = cond_momentum & cond_position & cond_active & cond_volume_control
+        mask = cond_momentum & cond_not_too_high & cond_position & cond_active & cond_volume_control & cond_candle & cond_trade_value
         codes = df_day['종목코드'].values[mask]
 
         if with_details:
             return {
                 code: {
                     '종가': int(close),
+                    '시가': int(op),
                     f'MA{ma_short}': int(mas),
                     f'MA{ma_mid}': int(mam),
                     '이격도': round(d * 100, 2),
                     '회전율': round(t, 2),
                     '거래량': int(v),
-                    '전일거래량': int(pv) if not np.isnan(pv) else 0
+                    '전일거래량': int(pv) if not np.isnan(pv) else 0,
+                    '거래대금': int(tv)
                 }
-                for code, close, mas, mam, d, t, v, pv in zip(
-                    codes, close_day[mask], ma_short_day[mask], ma_mid_day[mask],
-                    disparity[mask], turnover_day[mask], vol_day[mask], prev_vol_day[mask]
+                for code, close, op, mas, mam, d, t, v, pv, tv in zip(
+                    codes, close_day[mask], open_day[mask], ma_short_day[mask], ma_mid_day[mask],
+                    disparity[mask], turnover_day[mask], vol_day[mask], prev_vol_day[mask],
+                    trade_value_day[mask]
                 )
             }
         return set(codes)
