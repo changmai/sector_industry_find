@@ -63,11 +63,20 @@ React (localhost:5173)
 - `main.py -d 5 --theme-only` 또는 `--sector-only`
 
 ### sector_theme_analyzer/
-- **용도**: 과거 날짜 기준 백테스팅
-- **local_analyzer.py**: Parquet 기반 ~3초 분석 (권장)
-- **main.py**: API 기반 ~50분 분석
-- `download_ohlc.py`: OHLC 데이터 다운로드 (분봉/일봉)
-- `convert_to_parquet.py`: CSV→Parquet 변환 (70-80% 용량 감소)
+- **용도**: 과거 날짜 기준 멀티 조건 백테스팅
+- **핵심 CLI**:
+  - `single_day_test.py`: 일별 TP/SL 시뮬레이션 (벡터화, 고성능)
+  - `backtest_cli.py`: 멀티 조건 백테스팅 + TP/SL 최적화
+  - `condition_cli.py`: 개별 조건 테스트 및 종목 목록 확인
+- **엔진**:
+  - `condition_engine.py`: 조건 A~I + GT 조건 로직
+  - `condition_parser.py`: AND/OR 표현식 파서 ("A AND (B OR C)")
+  - `multi_backtester.py`: TP/SL 백테스팅 엔진 (트레일링스탑, 타임컷 지원)
+  - `combination_tester.py`: 조건 조합 자동 테스트 + TP/SL 최적화
+- **데이터**:
+  - `download_ohlc.py`: OHLC 데이터 다운로드 (분봉/일봉)
+  - `convert_to_parquet.py`: CSV→Parquet 변환 (70-80% 용량 감소)
+  - `conditions/default.json`: 조건별 기본 파라미터 (single source of truth)
 
 ### Frontend Components
 - `components/FootprintTable.tsx`: 메인 풋프린트 차트
@@ -101,9 +110,60 @@ backend/industry_mapping_cache.json # 업종 매핑 캐시
 - **다이버전스 분석**: 가격 추세 vs 프로그램 매매 신호 비교
 - **백테스팅**: UPH raw 데이터 기반 과거 이벤트 시뮬레이션
 
+## Backtesting Commands (sector_theme_analyzer)
+
+```bash
+# 일별 TP/SL 시뮬레이션 (범위 모드)
+cd sector_theme_analyzer
+python single_day_test.py --start-date 20251101 --end-date 20251130 --conditions "A" --days 7 --tp 10 --sl -5
+
+# TP/SL 우선순위 선택 (같은날 동시 도달 시)
+python single_day_test.py --date 20251105 --conditions "A AND D" --priority tp  # 익절 우선
+
+# 멀티 조건 백테스팅 + 최적화
+python backtest_cli.py --conditions "A AND D AND G" --optimize --tp-min 5 --tp-max 15 --sl-min -7 --sl-max -3
+
+# 개별 조건 테스트
+python condition_cli.py --condition A --date 20251205 --top 20
+```
+
+### 조건 시스템 (A~I + GT)
+
+| 조건 | 설명 |
+|------|------|
+| A | 섹터+업종 N일 연속 상승 |
+| B | N일 신고거래대금 |
+| C | 거래량 회전율 상위 N종목 |
+| D | 이평 정배열 (단기>중기>장기) |
+| E | N일 신고가 대비 등락률 범위 |
+| F | N일전 대비 거래량 비율 |
+| G | 회전율 X%~Y% 범위 |
+| H | 20일선 눌림목 (세력진입 후 조정) |
+| I | 5일선 급등주 (모멘텀 조정) |
+| GT_* | 기술적 지표 조건 (MACD, RSI 등) |
+
+조건 파라미터 변경은 `conditions/default.json` 수정 후 자동 적용됨.
+
+### 조합 테스트 (combination_tester.py)
+
+```bash
+# 기본 조합 테스트
+python combination_tester.py --conditions A,B,D,H --start-date 20251101 --end-date 20251130 --tp 10 --sl -5
+
+# 필수 조건 + 조합 (A,B 고정, C,D,E 중 조합)
+python combination_tester.py --required A,B --conditions C,D,E --min-size 1 --max-size 2
+
+# TP/SL 최적화 모드
+python combination_tester.py --conditions A,D,H --optimize --tp-min 5 --tp-max 15 --sl-min -7 --sl-max -3
+
+# 트레일링스탑 + 타임컷
+python combination_tester.py --conditions A,H --trailing-start 5 --trailing-offset 3 --time-cut-days 3 --time-cut-min-return 2
+```
+
 ## Code Conventions
 
 - **한국어 변수/주석**: 도메인 용어는 한국어 사용 (업종코드, 종목명 등)
 - **Color Convention**: 빨강=상승(Korean market), 파랑=하락
 - **API 응답**: `{ status: "success", ... }` 또는 HTTPException
 - **캐시 전략**: 종목명은 ls_stock_list_final.json에서 로드 (API 호출 최소화)
+- **조건 파라미터**: `conditions/default.json`이 single source of truth (하드코딩 금지)

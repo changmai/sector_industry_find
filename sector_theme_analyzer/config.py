@@ -12,8 +12,9 @@ env_path = os.path.join(os.path.dirname(__file__), '..', 'backend', '.env')
 load_dotenv(env_path)
 
 # LS증권 API 설정
-LS_APP_KEY = os.getenv("LS_APP_KEY", "")
-LS_APP_SECRET = os.getenv("LS_APP_SECRET", "")
+# backend/.env에서는 APP_KEY, APP_SECRET으로 저장됨
+LS_APP_KEY = os.getenv("LS_APP_KEY", "") or os.getenv("APP_KEY", "")
+LS_APP_SECRET = os.getenv("LS_APP_SECRET", "") or os.getenv("APP_SECRET", "")
 LS_REST_URL = "https://openapi.ls-sec.co.kr:8080"
 
 # API 엔드포인트

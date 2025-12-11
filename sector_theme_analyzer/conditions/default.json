@@ -14,9 +14,9 @@
   },
   "D": {
     "description": "이평 정배열 (단기>중기>장기)",
-    "short": 20,
-    "mid": 60,
-    "long": 120
+    "short": 5,
+    "mid": 20,
+    "long": 60
   },
   "E": {
     "description": "N일 신고가 대비 등락률 범위",
@@ -27,12 +27,93 @@
   "F": {
     "description": "N일전 대비 거래량 비율",
     "compare_days": 5,
-    "min_ratio": 150,
+    "min_ratio": 200,
     "max_ratio": 9000
   },
   "G": {
     "description": "회전율 X%~Y% 범위",
     "min_rate": 10.0,
-    "max_rate": 30.0
+    "max_rate": 900.0
+  },
+  "H": {
+    "description": "20일선 눌림목 (세력진입 후 조정)",
+    "ma_short": 20,
+    "ma_mid": 60,
+    "ma_long": 120,
+    "smart_money_turnover": 10.0,
+    "smart_money_lookback": 20,
+    "support_margin": 0.03,
+    "volume_dry_ratio": 0.7
+  },
+  "I": {
+    "description": "5일선 급등주 (모멘텀 조정)",
+    "ma_short": 5,
+    "ma_mid": 20,
+    "disparity_min": 1.15,
+    "support_margin": 0.02,
+    "min_turnover": 3.0
+  },
+  "GT_P1": {
+    "description": "특정 테마(섹터) 소속 종목",
+    "target_themes": []
+  },
+  "GT_M1": {
+    "description": "지수 MACD 상승 추세",
+    "market": null,
+    "macd_fast": 12,
+    "macd_slow": 26,
+    "macd_signal": 9
+  },
+  "GT_M2": {
+    "description": "지수 RSI 과매수 아님",
+    "market": null,
+    "rsi_period": 14,
+    "rsi_overbought": 70.0
+  },
+  "GT_A": {
+    "description": "MACD 골든크로스",
+    "macd_fast": 12,
+    "macd_slow": 26,
+    "macd_signal": 9
+  },
+  "GT_B": {
+    "description": "RSI 매수 신호 (B1 OR B2)",
+    "rsi_period": 14,
+    "rsi_oversold": 30.0
+  },
+  "GT_B1": {
+    "description": "RSI 과매도 탈출 (30 상향돌파)",
+    "rsi_period": 14,
+    "rsi_oversold": 30.0
+  },
+  "GT_B2": {
+    "description": "RSI 2일 연속 상승",
+    "rsi_period": 14
+  },
+  "GT_C": {
+    "description": "RSI 과매수 아님 (<70)",
+    "rsi_period": 14,
+    "rsi_overbought": 70.0
+  },
+  "GT_D": {
+    "description": "바닥 패턴 (저점대비 반등)",
+    "lookback_days": 20,
+    "bounce_pct": 0.03
+  },
+  "GT_D2": {
+    "description": "변동성 축소",
+    "short_period": 5,
+    "long_period": 20
+  },
+  "GT_E": {
+    "description": "이평선 수렴",
+    "short_period": 5,
+    "long_period": 60,
+    "convergence_pct": 0.03
+  },
+  "GT_F": {
+    "description": "거래량 급증",
+    "avg_period": 20,
+    "volume_multiplier": 2.0
   }
 }

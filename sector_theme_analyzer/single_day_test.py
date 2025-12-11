@@ -72,11 +72,15 @@ def print_condition_details(condition_expr: str):
     print("-" * 70)
 
 
-def simulate_single_stock(code, base_date, base_close, stock_name, turnover, future_days, stock_data, tp, sl, priority="sl"):
-    """단일 종목 TP/SL 시뮬레이션 (벡터화 버전)
+def simulate_single_stock(code, base_date, base_close, stock_name, turnover, future_days, stock_data, tp, sl, priority="sl", trailing_start=None, trailing_offset=None, time_cut_days=None, time_cut_min_return=None):
+    """단일 종목 TP/SL 시뮬레이션 (벡터화 버전 + 트레일링 스탑 + 타임컷)
 
     Args:
         priority: 같은 날 TP/SL 동시 도달 시 우선순위 ("sl" 또는 "tp")
+        trailing_start: 트레일링 스탑 시작 수익률 (예: 5.0 = 5% 수익 시 트레일링 시작)
+        trailing_offset: 고점 대비 하락 허용폭 (예: 3.0 = 고점 대비 3% 하락 시 청산)
+        time_cut_days: 타임컷 체크 일수 (예: 3 = 3일차에 수익률 체크)
+        time_cut_min_return: 타임컷 최소 수익률 % (이하면 청산)
     """
     result = {
         '종목코드': code,
@@ -88,7 +92,9 @@ def simulate_single_stock(code, base_date, base_close, stock_name, turnover, fut
         '보유일': 0,
         '청산가': None,
         '수익률': 0,
-        '청산사유': '기간만료'
+        '청산사유': '기간만료',
+        '최고수익률': 0,  # 보유 기간 중 최고 수익률
+        '최저수익률': 0,  # 보유 기간 중 최저 수익률
     }
 
     # 미래 날짜 데이터 한번에 필터링 (벡터화)
@@ -115,7 +121,85 @@ def simulate_single_stock(code, base_date, base_close, stock_name, turnover, fut
     # 수익률 벡터 계산 (한번에)
     high_rets = (highs - base_close) / base_close * 100
     low_rets = (lows - base_close) / base_close * 100
+    close_rets = (closes - base_close) / base_close * 100
 
+    # 보유 기간 중 최고/최저 수익률 계산 (청산 시점과 무관)
+    result['최고수익률'] = float(np.max(high_rets))
+    result['최저수익률'] = float(np.min(low_rets))
+
+    # 타임컷 활성화 여부
+    use_time_cut = (time_cut_days is not None and time_cut_min_return is not None)
+
+    # 트레일링 스탑 모드 또는 타임컷 사용 시 순회 방식
+    if (trailing_start is not None and trailing_offset is not None) or use_time_cut:
+        # 날짜별로 순회하며 트레일링 스탑/타임컷 체크
+        peak_ret = 0.0  # 매수가 대비 최고 수익률
+        trailing_active = False
+        trailing_sl = sl  # 현재 손절 라인
+        use_trailing = (trailing_start is not None and trailing_offset is not None)
+
+        for i in range(len(future_data)):
+            day_high_ret = high_rets[i]
+            day_low_ret = low_rets[i]
+            day_close_ret = close_rets[i]
+            hold_day = i + 1  # 보유일 (1일차부터 시작)
+
+            # 고점 갱신
+            if day_high_ret > peak_ret:
+                peak_ret = day_high_ret
+
+            # 트레일링 시작 조건 체크
+            if use_trailing and not trailing_active and peak_ret >= trailing_start:
+                trailing_active = True
+
+            # 트레일링 활성화 시 손절 라인 갱신
+            if use_trailing and trailing_active:
+                trailing_sl = peak_ret - trailing_offset
+
+            # 1. 손절/트레일링 손절 체크 (저가 기준)
+            if day_low_ret <= trailing_sl:
+                result['청산일'] = dates[i]
+                result['보유일'] = hold_day
+                if use_trailing and trailing_active and trailing_sl > sl:
+                    # 트레일링 손절 (이익 실현)
+                    result['청산가'] = base_close * (1 + trailing_sl / 100)
+                    result['수익률'] = trailing_sl
+                    result['청산사유'] = '트레일링'
+                else:
+                    # 일반 손절
+                    result['청산가'] = base_close * (1 + sl / 100)
+                    result['수익률'] = sl
+                    result['청산사유'] = '손절'
+                return result
+
+            # 2. TP 도달 체크
+            if day_high_ret >= tp:
+                result['청산일'] = dates[i]
+                result['보유일'] = hold_day
+                result['청산가'] = base_close * (1 + tp / 100)
+                result['수익률'] = tp
+                result['청산사유'] = '익절'
+                return result
+
+            # 3. 타임컷 체크 (지정일 종가 기준)
+            if use_time_cut and hold_day == time_cut_days:
+                if day_close_ret < time_cut_min_return:
+                    result['청산일'] = dates[i]
+                    result['보유일'] = hold_day
+                    result['청산가'] = closes[i]
+                    result['수익률'] = day_close_ret
+                    result['청산사유'] = '타임컷'
+                    return result
+
+        # 기간만료
+        result['청산일'] = dates[-1]
+        result['보유일'] = len(dates)
+        result['청산가'] = closes[-1]
+        result['수익률'] = close_rets[-1]
+        result['청산사유'] = '기간만료'
+        return result
+
+    # 기존 TP/SL 로직 (트레일링 미사용 시)
     # 첫 TP/SL 도달 인덱스 찾기 (numpy)
     sl_hits = np.where(low_rets <= sl)[0]
     tp_hits = np.where(high_rets >= tp)[0]
@@ -163,7 +247,7 @@ def simulate_single_stock(code, base_date, base_close, stock_name, turnover, fut
     return result
 
 
-def run_single_date(engine, cond_parser, df, trading_days, base_date, conditions, max_days, tp, sl, holdings=None, stock_groups=None, priority="sl"):
+def run_single_date(engine, cond_parser, df, trading_days, base_date, conditions, max_days, tp, sl, holdings=None, stock_groups=None, priority="sl", trailing_start=None, trailing_offset=None, time_cut_days=None, time_cut_min_return=None):
     """단일 날짜 시뮬레이션 실행 (최적화 버전)"""
     if holdings is None:
         holdings = {}
@@ -175,16 +259,19 @@ def run_single_date(engine, cond_parser, df, trading_days, base_date, conditions
     if total_matched == 0:
         return [], holdings, {'total_matched': 0, 'new_buys': 0, 'skipped': 0}
 
-    # 보유 중인 종목 제외 (청산일이 오늘 이후인 것만 유지)
-    stocks_to_buy = [s for s in stocks if s not in holdings or holdings[s] <= base_date]
-    skipped = total_matched - len(stocks_to_buy)
-
     # 이후 거래일 찾기
     base_idx = trading_days.index(base_date)
-    future_days = trading_days[base_idx:base_idx + max_days + 1]
+    future_days = trading_days[base_idx:base_idx + max_days + 2]  # 다음날 매수를 위해 +2
 
     if len(future_days) < 2:
-        return [], holdings, {'total_matched': total_matched, 'new_buys': 0, 'skipped': skipped}
+        return [], holdings, {'total_matched': total_matched, 'new_buys': 0, 'skipped': 0}
+
+    # 다음날(매수일) 정보
+    entry_date = future_days[1]  # 신호일 다음날
+
+    # 보유 중인 종목 제외 (청산일이 매수일 이후인 것만 유지 = 매수일에 아직 보유 중)
+    stocks_to_buy = [s for s in stocks if s not in holdings or holdings[s] <= entry_date]
+    skipped = total_matched - len(stocks_to_buy)
 
     results = []
     has_turnover = '거래회전율' in df.columns
@@ -202,19 +289,21 @@ def run_single_date(engine, cond_parser, df, trading_days, base_date, conditions
         if stock_data.empty:
             continue
 
-        # 기준일 데이터
-        base_data = stock_data[stock_data['날짜'] == base_date]
-        if base_data.empty:
+        # 다음날(매수일) 데이터
+        entry_data = stock_data[stock_data['날짜'] == entry_date]
+        if entry_data.empty:
             continue
 
-        base_close = base_data['종가'].values[0]
-        stock_name = base_data['종목명'].values[0]
-        turnover = base_data['거래회전율'].values[0] if has_turnover else 0
+        # 다음날 시가 + 슬리피지 0.004% (수수료 포함)
+        entry_price = entry_data['시가'].values[0] * 1.00004
+        stock_name = entry_data['종목명'].values[0]
+        turnover = entry_data['거래회전율'].values[0] if has_turnover else 0
 
-        # 시뮬레이션
+        # 시뮬레이션 (매수일부터 시작하도록 future_days 조정)
         result = simulate_single_stock(
-            code, base_date, base_close, stock_name, turnover,
-            future_days, stock_data, tp, sl, priority
+            code, entry_date, entry_price, stock_name, turnover,
+            future_days[1:], stock_data, tp, sl, priority, trailing_start, trailing_offset,
+            time_cut_days, time_cut_min_return
         )
 
         if result['청산일']:
@@ -259,7 +348,7 @@ def print_single_date_results(results, tp, sl):
     print("-" * 70)
 
     # 상위 종목 표시
-    display_cols = ['종목코드', '종목명', '매수가', '회전율', '보유일', '청산사유', '수익률']
+    display_cols = ['종목코드', '종목명', '매수가', '회전율', '보유일', '청산사유', '수익률', '최고수익률', '최저수익률']
     display_cols = [c for c in display_cols if c in result_df.columns]
 
     print(f"\n[상위 {min(50, len(result_df))}개 종목]")
@@ -270,7 +359,7 @@ def print_single_date_results(results, tp, sl):
             top_df[col] = top_df[col].apply(lambda x: f"{x:,.0f}")
         elif col == '회전율':
             top_df[col] = top_df[col].apply(lambda x: f"{x:.2f}%")
-        elif col == '수익률':
+        elif col in ['수익률', '최고수익률', '최저수익률']:
             top_df[col] = top_df[col].apply(lambda x: f"{x:+.2f}%")
 
     print(top_df.to_string(index=False))
@@ -284,7 +373,7 @@ def print_single_date_results(results, tp, sl):
                 bottom_df[col] = bottom_df[col].apply(lambda x: f"{x:,.0f}")
             elif col == '회전율':
                 bottom_df[col] = bottom_df[col].apply(lambda x: f"{x:.2f}%")
-            elif col == '수익률':
+            elif col in ['수익률', '최고수익률', '최저수익률']:
                 bottom_df[col] = bottom_df[col].apply(lambda x: f"{x:+.2f}%")
         print(bottom_df.to_string(index=False))
 
@@ -304,6 +393,14 @@ def main():
     parser.add_argument("--sl", type=float, default=-5.0, help="손절 라인 %% (기본: -5)")
     parser.add_argument("--priority", type=str, default="sl", choices=["sl", "tp"], help="같은 날 TP/SL 동시 도달 시 우선순위 (기본: sl)")
     parser.add_argument("--top", "-t", type=int, default=50, help="상위 N개 표시")
+
+    # 트레일링 스탑 옵션
+    parser.add_argument("--trailing-start", type=float, default=None, help="트레일링 스탑 시작 수익률 %% (예: 5 = 5%% 수익 시 활성화)")
+    parser.add_argument("--trailing-offset", type=float, default=None, help="고점 대비 하락 허용폭 %% (예: 3 = 고점 대비 3%% 하락 시 청산)")
+
+    # 타임컷 옵션
+    parser.add_argument("--time-cut-days", type=int, default=None, help="타임컷 체크 일수 (예: 3 = 3일차에 수익률 체크)")
+    parser.add_argument("--time-cut-min-return", type=float, default=None, help="타임컷 최소 수익률 %% (이하면 청산, 예: 2 = 2%% 미만 시 청산)")
     args = parser.parse_args()
 
     # 날짜 옵션 검증
@@ -324,6 +421,12 @@ def main():
         print(f"   특정 날짜 수익률 조회: {args.date}")
     print(f"   조건: {args.conditions}")
     print(f"   TP: {args.tp:+.1f}% | SL: {args.sl:.1f}% | 최대보유: {args.days}일")
+    if args.trailing_start is not None and args.trailing_offset is not None:
+        print(f"   트레일링: {args.trailing_start:+.1f}% 도달 시 활성화, 고점 대비 -{args.trailing_offset:.1f}% 하락 시 청산")
+    else:
+        print(f"   트레일링: 미사용")
+    if args.time_cut_days is not None and args.time_cut_min_return is not None:
+        print(f"   타임컷: {args.time_cut_days}일 후 수익률 {args.time_cut_min_return:+.1f}% 미만 시 청산")
     print("=" * 70)
 
     # 조건 상세 정보 출력
@@ -380,13 +483,17 @@ def main():
         total_new_buys_all = 0
         total_skipped_all = 0
 
-        for i, date in enumerate(target_dates):
-            # 오늘 기준으로 청산된 종목 제거 (청산일이 오늘 이전인 것 제거)
-            holdings = {code: exit_date for code, exit_date in holdings.items() if exit_date > date}
+        # 마지막 날은 다음날 매수 불가하므로 제외
+        for i, date in enumerate(target_dates[:-1]):
+            # 다음날(매수일) 기준으로 청산된 종목 제거
+            next_date = target_dates[i + 1] if i + 1 < len(target_dates) else date
+            holdings = {code: exit_date for code, exit_date in holdings.items() if exit_date > next_date}
 
             results, holdings, stats = run_single_date(
                 engine, cond_parser, df, trading_days, date,
-                args.conditions, args.days, args.tp, args.sl, holdings, stock_groups, args.priority
+                args.conditions, args.days, args.tp, args.sl, holdings, stock_groups, args.priority,
+                args.trailing_start, args.trailing_offset,
+                args.time_cut_days, args.time_cut_min_return
             )
 
             all_results.extend(results)
@@ -397,10 +504,14 @@ def main():
             # 날짜별 요약
             if results:
                 avg_ret = sum(r['수익률'] for r in results) / len(results)
+                avg_max_ret = sum(r['최고수익률'] for r in results) / len(results)
+                avg_min_ret = sum(r['최저수익률'] for r in results) / len(results)
                 win_count = sum(1 for r in results if r['수익률'] > 0)
                 win_rate = win_count / len(results) * 100
             else:
                 avg_ret = 0
+                avg_max_ret = 0
+                avg_min_ret = 0
                 win_rate = 0
 
             daily_summaries.append({
@@ -409,7 +520,9 @@ def main():
                 '신규매수': stats['new_buys'],
                 '보유중스킵': stats['skipped'],
                 '평균수익률': avg_ret,
-                '승률': win_rate
+                '승률': win_rate,
+                '평균최고': avg_max_ret,
+                '평균최저': avg_min_ret
             })
 
             # 진행률 출력
@@ -418,17 +531,18 @@ def main():
         print()  # 줄바꿈
 
         # 날짜별 결과 테이블
-        print("\n" + "=" * 70)
+        print("\n" + "=" * 90)
         print("[날짜별 결과]")
-        print("-" * 70)
-        print(f"{'날짜':<12} {'조건충족':>8} {'신규매수':>8} {'스킵':>6} {'평균수익률':>10} {'승률':>8}")
-        print("-" * 70)
+        print("-" * 90)
+        # 헤더와 데이터 열 정렬 (고정 폭)
+        print(f"{'DATE':<10} {'MATCH':>6} {'BUY':>6} {'SKIP':>5} {'AVG_RET':>9} {'WIN%':>6} {'MAX_RET':>9} {'MIN_RET':>9}")
+        print("-" * 90)
 
         for s in daily_summaries:
-            print(f"{s['날짜']:<12} {s['조건충족']:>8} {s['신규매수']:>8} {s['보유중스킵']:>6} "
-                  f"{s['평균수익률']:>+9.2f}% {s['승률']:>7.1f}%")
+            print(f"{s['날짜']:<10} {s['조건충족']:>6} {s['신규매수']:>6} {s['보유중스킵']:>5} "
+                  f"{s['평균수익률']:>+8.2f}% {s['승률']:>5.1f}% {s['평균최고']:>+8.2f}% {s['평균최저']:>+8.2f}%")
 
-        print("-" * 70)
+        print("-" * 90)
 
         # 전체 통합 결과
         if all_results:
@@ -449,6 +563,10 @@ def main():
             print(f"\n[청산 사유]")
             print(f"   익절({args.tp:+.1f}%): {exit_stats.get('익절', 0)}회 ({exit_stats.get('익절', 0)/total*100:.1f}%)")
             print(f"   손절({args.sl:.1f}%): {exit_stats.get('손절', 0)}회 ({exit_stats.get('손절', 0)/total*100:.1f}%)")
+            if args.trailing_start is not None:
+                print(f"   트레일링: {exit_stats.get('트레일링', 0)}회 ({exit_stats.get('트레일링', 0)/total*100:.1f}%)")
+            if args.time_cut_days is not None:
+                print(f"   타임컷: {exit_stats.get('타임컷', 0)}회 ({exit_stats.get('타임컷', 0)/total*100:.1f}%)")
             print(f"   기간만료: {exit_stats.get('기간만료', 0)}회 ({exit_stats.get('기간만료', 0)/total*100:.1f}%)")
         else:
             print("\n   결과 없음")
@@ -458,7 +576,9 @@ def main():
         print(f"\n[2] 조건 평가: {args.conditions}")
         results, _, stats = run_single_date(
             engine, cond_parser, df, trading_days, args.date,
-            args.conditions, args.days, args.tp, args.sl, None, stock_groups, args.priority
+            args.conditions, args.days, args.tp, args.sl, None, stock_groups, args.priority,
+            args.trailing_start, args.trailing_offset,
+            args.time_cut_days, args.time_cut_min_return
         )
         print(f"   -> {stats['total_matched']}개 종목 충족")
 

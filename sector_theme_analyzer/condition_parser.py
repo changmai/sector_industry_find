@@ -113,14 +113,45 @@ class ConditionParser:
         if expr.startswith('__RESULT_') and expr.endswith('__'):
             return self._temp_results.get(expr, set())
 
+        # 기본 조건 목록
+        valid_conditions = {'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I'}
+        # GT 조건 목록
+        gt_conditions = {'GT_P1', 'GT_M1', 'GT_M2', 'GT_A', 'GT_B', 'GT_B1', 'GT_B2',
+                         'GT_C', 'GT_D', 'GT_D2', 'GT_E', 'GT_F'}
+
         # 단일 조건 평가
-        if expr in ['A', 'B', 'C', 'D', 'E', 'F', 'G']:
+        if expr in valid_conditions or expr in gt_conditions:
             condition_params = self.params.get(expr, {})
             # description 필드 제외 (함수 파라미터가 아님)
             condition_params = {k: v for k, v in condition_params.items() if k != 'description'}
-            return self.engine.evaluate(expr, base_date, condition_params)
+
+            # GT_M1, GT_M2는 bool 반환 -> set으로 변환 필요
+            result = self.engine.evaluate(expr, base_date, condition_params)
+
+            # 시장 조건(GT_M1, GT_M2)은 bool 반환 - 전체 종목 또는 빈 set 반환
+            if expr in ['GT_M1', 'GT_M2']:
+                if isinstance(result, bool):
+                    if result:
+                        # True면 제한 없음 (모든 종목 통과)
+                        return self._get_all_stock_codes()
+                    else:
+                        # False면 아무 종목도 통과 못함
+                        return set()
+                elif isinstance(result, dict) and 'result' in result:
+                    if result['result']:
+                        return self._get_all_stock_codes()
+                    else:
+                        return set()
+
+            return result
 
         print(f"   [WARN] 알 수 없는 토큰: {expr}")
+        return set()
+
+    def _get_all_stock_codes(self) -> set:
+        """엔진에 로드된 모든 종목코드 반환"""
+        if hasattr(self.engine, 'stocks'):
+            return {s.get('단축코드', '') for s in self.engine.stocks if s.get('단축코드')}
         return set()
 
     def validate_expression(self, expression: str) -> tuple[bool, str]:
@@ -136,16 +167,23 @@ class ConditionParser:
         if expr.count('(') != expr.count(')'):
             return False, "괄호 짝이 맞지 않습니다"
 
-        # 유효한 조건 ID 확인
-        valid_conditions = {'A', 'B', 'C', 'D', 'E', 'F', 'G'}
-        tokens = re.findall(r'[A-Z]', expr)
+        # 기본 조건 목록
+        valid_conditions = {'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I'}
+        # GT 조건 목록
+        gt_conditions = {'GT_P1', 'GT_M1', 'GT_M2', 'GT_A', 'GT_B', 'GT_B1', 'GT_B2',
+                         'GT_C', 'GT_D', 'GT_D2', 'GT_E', 'GT_F'}
 
-        for token in tokens:
-            if token not in valid_conditions and token not in ['A', 'N', 'D', 'O', 'R']:
-                # AND, OR 키워드 제외
-                continue
+        # GT_ 조건 추출
+        gt_tokens = re.findall(r'GT_[A-Z0-9]+', expr)
+        for gt_token in gt_tokens:
+            if gt_token not in gt_conditions:
+                return False, f"알 수 없는 GT 조건: {gt_token}"
 
-        invalid = [t for t in tokens if t not in valid_conditions and t not in list('ANDOR')]
+        # GT 토큰 제거 후 단일 문자 조건 확인
+        expr_without_gt = re.sub(r'GT_[A-Z0-9]+', '', expr)
+        tokens = re.findall(r'\b[A-I]\b', expr_without_gt)
+
+        invalid = [t for t in tokens if t not in valid_conditions]
         if invalid:
             return False, f"알 수 없는 조건: {', '.join(set(invalid))}"
 
