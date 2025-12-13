@@ -58,14 +58,21 @@ ETF_KOSDAQ_PATH = os.path.join(OUTPUT_DIR, "etf_229200_KOSDAQ150_daily.parquet")
 class ConditionEngine:
     """조건 평가 엔진"""
 
-    def __init__(self, parquet_path: str = None, json_path: str = None):
+    def __init__(self, parquet_path: str = None, json_path: str = None,
+                 preloaded_df: pd.DataFrame = None, preloaded_stocks: list = None):
         """
         Args:
             parquet_path: 일봉 OHLC Parquet 파일 경로
             json_path: 종목 리스트 JSON 경로
+            preloaded_df: 사전 로드된 DataFrame (Dask scatter용)
+            preloaded_stocks: 사전 로드된 종목 리스트 (Dask scatter용)
         """
         self.parquet_path = parquet_path
         self.json_path = json_path or STOCK_LIST_PATH
+
+        # 사전 로드된 데이터 (Dask 공유 메모리용)
+        self._preloaded_df = preloaded_df
+        self._preloaded_stocks = preloaded_stocks
 
         self.df_daily: pd.DataFrame = None  # 일봉 데이터
         self.stocks: list[dict] = []         # 종목 리스트
@@ -81,8 +88,104 @@ class ConditionEngine:
         self.df_kospi_etf: pd.DataFrame = None
         self.df_kosdaq_etf: pd.DataFrame = None
 
+        # 사전 계산된 GT 지표 (전체 기간, 한 번만 계산)
+        self._precomputed_gt_indicators: pd.DataFrame = None
+        self._gt_precomputed: bool = False
+
+    def clear_cache(self):
+        """모든 캐시 클리어 (메모리 해제용)"""
+        self._ma_cache.clear()
+        self._trading_days_cache.clear()
+        self._indicator_cache.clear()
+        self._condition_cache.clear()
+        # 사전계산된 GT 지표는 유지 (재사용)
+
+    def clear_all_cache(self):
+        """사전계산 포함 모든 캐시 클리어"""
+        self.clear_cache()
+        self._precomputed_gt_indicators = None
+        self._gt_precomputed = False
+
+    def precompute_gt_indicators(self, macd_fast: int = 12, macd_slow: int = 26,
+                                  macd_signal: int = 9, rsi_period: int = 14,
+                                  verbose: bool = True):
+        """
+        GT 조건용 기술적 지표 사전 계산 (전체 데이터, 1회만 실행)
+
+        백테스팅 시작 전에 호출하면 이후 GT 조건 평가 시 재계산 없이 필터링만 수행.
+        메모리 사용량과 계산 시간을 대폭 절감.
+        """
+        if self._gt_precomputed:
+            if verbose:
+                print("   [GT] 이미 사전계산됨 (캐시 사용)")
+            return
+
+        if verbose:
+            print("   [GT] 기술적 지표 사전계산 중...")
+
+        import time
+        start = time.time()
+
+        df = self.df_daily.copy()
+        df = df.sort_values(['종목코드', '날짜'])
+        df['종가'] = pd.to_numeric(df['종가'], errors='coerce')
+
+        # EMA 계산 (MACD용)
+        df['EMA_fast'] = df.groupby('종목코드')['종가'].transform(
+            lambda x: x.ewm(span=macd_fast, adjust=False).mean()
+        )
+        df['EMA_slow'] = df.groupby('종목코드')['종가'].transform(
+            lambda x: x.ewm(span=macd_slow, adjust=False).mean()
+        )
+        df['MACD'] = df['EMA_fast'] - df['EMA_slow']
+        df['Signal'] = df.groupby('종목코드')['MACD'].transform(
+            lambda x: x.ewm(span=macd_signal, adjust=False).mean()
+        )
+
+        # RSI 계산
+        df['delta'] = df.groupby('종목코드')['종가'].diff()
+        df['gain'] = df['delta'].where(df['delta'] > 0, 0.0)
+        df['loss'] = (-df['delta']).where(df['delta'] < 0, 0.0)
+        df['avg_gain'] = df.groupby('종목코드')['gain'].transform(
+            lambda x: x.ewm(com=rsi_period - 1, min_periods=rsi_period).mean()
+        )
+        df['avg_loss'] = df.groupby('종목코드')['loss'].transform(
+            lambda x: x.ewm(com=rsi_period - 1, min_periods=rsi_period).mean()
+        )
+        df['RSI'] = 100 - (100 / (1 + df['avg_gain'] / df['avg_loss']))
+
+        # 전일값 계산
+        df['MACD_prev'] = df.groupby('종목코드')['MACD'].shift(1)
+        df['Signal_prev'] = df.groupby('종목코드')['Signal'].shift(1)
+        df['RSI_prev'] = df.groupby('종목코드')['RSI'].shift(1)
+        df['RSI_prev2'] = df.groupby('종목코드')['RSI'].shift(2)
+
+        # 임시 컬럼 제거
+        df.drop(columns=['delta', 'gain', 'loss', 'avg_gain', 'avg_loss'], inplace=True, errors='ignore')
+
+        self._precomputed_gt_indicators = df
+        self._gt_precomputed = True
+
+        elapsed = time.time() - start
+        if verbose:
+            print(f"   [GT] 사전계산 완료: {elapsed:.1f}초, {len(df):,}행")
+
     def load_data(self) -> bool:
         """데이터 로드 (일봉 전용)"""
+
+        # Dask scatter로 사전 로드된 데이터가 있으면 사용
+        if self._preloaded_df is not None and self._preloaded_stocks is not None:
+            self.df_daily = self._preloaded_df
+            self.stocks = self._preloaded_stocks
+
+            # 종목 정보 딕셔너리 생성
+            for stock in self.stocks:
+                code = stock.get("단축코드", "")
+                self.stock_info[code] = stock
+
+            # ETF는 로드하지 않음 (Dask 워커에서는 GT 조건 사용 시 별도 처리 필요)
+            return True
+
         print("\n   [LOAD] 데이터 로드 중...")
 
         # Parquet 로드
@@ -140,9 +243,16 @@ class ConditionEngine:
         """일봉 데이터 로드 및 전처리"""
         print("   [DAILY] 일봉 데이터 로드")
 
-        # 숫자 타입 변환
-        numeric_cols = ['시가', '고가', '저가', '종가', '거래량', '거래대금', '발행주식수', '거래회전율']
-        for col in numeric_cols:
+        # 숫자 타입 변환 (float32 최적화 - 메모리 50% 절감, 캐시 효율 향상)
+        # OHLC 가격 데이터: float32 (소수점 6자리 정밀도)
+        float32_cols = ['시가', '고가', '저가', '종가', '거래회전율']
+        for col in float32_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').astype(np.float32)
+
+        # 큰 수 컬럼: float64 유지 (정밀도 필요)
+        float64_cols = ['거래량', '거래대금', '발행주식수']
+        for col in float64_cols:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
 
@@ -823,7 +933,18 @@ class ConditionEngine:
     # =========================================================================
     def _prepare_gt_indicators(self, base_date: str, macd_fast: int = 12, macd_slow: int = 26,
                                 macd_signal: int = 9, rsi_period: int = 14):
-        """GT 조건용 기술적 지표 일괄 계산 (벡터화)"""
+        """GT 조건용 기술적 지표 일괄 계산 (벡터화)
+
+        사전계산된 데이터가 있으면 필터링만 수행 (속도 대폭 향상)
+        """
+        # [최적화] 사전계산된 데이터가 있으면 필터링만 수행
+        if self._gt_precomputed and self._precomputed_gt_indicators is not None:
+            df = self._precomputed_gt_indicators[
+                self._precomputed_gt_indicators['날짜'] <= base_date
+            ]
+            return df
+
+        # 기존 캐시 확인
         cache_key = (base_date, macd_fast, macd_slow, macd_signal, rsi_period)
         if cache_key in self._indicator_cache:
             return self._indicator_cache[cache_key]
@@ -1240,7 +1361,7 @@ class ConditionEngine:
                     support_margin: float = 0.03,
                     support_lower: float = 0.99,
                     volume_dry_ratio: float = 0.7,
-                    min_trade_value: float = 500000000,
+                    min_trade_value: float = 500,  # 백만원 단위 (500 = 5억원)
                     require_bullish_candle: bool = True,
                     require_lower_wick: bool = False,
                     with_details: bool = False):
@@ -1271,7 +1392,7 @@ class ConditionEngine:
             support_margin: 20일선 대비 상단 허용 마진 (기본 3%)
             support_lower: 20일선 대비 하단 허용 비율 (기본 0.99 = 1% 이탈 허용)
             volume_dry_ratio: 전일대비 거래량 감소 비율 (기본 0.7 = 30% 감소)
-            min_trade_value: 최소 거래대금 (기본 5억원)
+            min_trade_value: 최소 거래대금 - 백만원 단위 (기본 500 = 5억원)
             require_bullish_candle: 양봉 필터 적용 여부 (기본 True)
             require_lower_wick: 아래꼬리 필터 적용 여부 (기본 False)
             with_details: True면 상세값 dict 반환
@@ -1397,7 +1518,7 @@ class ConditionEngine:
                     disparity_max: float = 1.25,
                     support_margin: float = 0.02,
                     min_turnover: float = 3.0,
-                    min_trade_value: float = 1000000000,
+                    min_trade_value: float = 1000,  # 백만원 단위 (1000 = 10억원)
                     require_bullish_candle: bool = True,
                     with_details: bool = False):
         """
@@ -1426,7 +1547,7 @@ class ConditionEngine:
             disparity_max: 20일선 대비 최대 이격도 (기본 1.25 = 25%)
             support_margin: 5일선 대비 허용 마진 (기본 2%)
             min_turnover: 최소 회전율 (기본 3%)
-            min_trade_value: 최소 거래대금 (기본 10억원)
+            min_trade_value: 최소 거래대금 - 백만원 단위 (기본 1000 = 10억원)
             require_bullish_candle: 양봉 필터 적용 여부 (기본 True)
             with_details: True면 상세값 dict 반환
 

@@ -45,7 +45,7 @@
     "support_margin": 0.03,
     "support_lower": 0.99,
     "volume_dry_ratio": 0.7,
-    "min_trade_value": 500000000,
+    "min_trade_value": 500,
     "require_bullish_candle": true,
     "require_lower_wick": false
   },
@@ -57,7 +57,7 @@
     "disparity_max": 1.25,
     "support_margin": 0.02,
     "min_turnover": 3.0,
-    "min_trade_value": 1000000000,
+    "min_trade_value": 1000,
     "require_bullish_candle": true
   },
   "GT_P1": {

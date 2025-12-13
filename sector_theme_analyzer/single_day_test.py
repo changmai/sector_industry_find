@@ -261,13 +261,13 @@ def run_single_date(engine, cond_parser, df, trading_days, base_date, conditions
 
     # 이후 거래일 찾기
     base_idx = trading_days.index(base_date)
-    future_days = trading_days[base_idx:base_idx + max_days + 2]  # 다음날 매수를 위해 +2
+    future_days = trading_days[base_idx:base_idx + max_days + 1]  # 당일 종가 매수
 
-    if len(future_days) < 2:
+    if len(future_days) < 1:
         return [], holdings, {'total_matched': total_matched, 'new_buys': 0, 'skipped': 0}
 
-    # 다음날(매수일) 정보
-    entry_date = future_days[1]  # 신호일 다음날
+    # 당일(매수일) 정보
+    entry_date = future_days[0]  # 신호일 당일
 
     # 보유 중인 종목 제외 (청산일이 매수일 이후인 것만 유지 = 매수일에 아직 보유 중)
     stocks_to_buy = [s for s in stocks if s not in holdings or holdings[s] <= entry_date]
@@ -289,20 +289,20 @@ def run_single_date(engine, cond_parser, df, trading_days, base_date, conditions
         if stock_data.empty:
             continue
 
-        # 다음날(매수일) 데이터
+        # 당일(매수일) 데이터
         entry_data = stock_data[stock_data['날짜'] == entry_date]
         if entry_data.empty:
             continue
 
-        # 다음날 시가 + 슬리피지 0.004% (수수료 포함)
-        entry_price = entry_data['시가'].values[0] * 1.00004
+        # 당일 종가 + 슬리피지 0.004% (수수료 포함)
+        entry_price = entry_data['종가'].values[0] * 1.00004
         stock_name = entry_data['종목명'].values[0]
         turnover = entry_data['거래회전율'].values[0] if has_turnover else 0
 
-        # 시뮬레이션 (매수일부터 시작하도록 future_days 조정)
+        # 시뮬레이션 (당일 종가 매수, 다음날부터 청산 체크)
         result = simulate_single_stock(
             code, entry_date, entry_price, stock_name, turnover,
-            future_days[1:], stock_data, tp, sl, priority, trailing_start, trailing_offset,
+            future_days, stock_data, tp, sl, priority, trailing_start, trailing_offset,
             time_cut_days, time_cut_min_return
         )
 
@@ -483,11 +483,10 @@ def main():
         total_new_buys_all = 0
         total_skipped_all = 0
 
-        # 마지막 날은 다음날 매수 불가하므로 제외
-        for i, date in enumerate(target_dates[:-1]):
-            # 다음날(매수일) 기준으로 청산된 종목 제거
-            next_date = target_dates[i + 1] if i + 1 < len(target_dates) else date
-            holdings = {code: exit_date for code, exit_date in holdings.items() if exit_date > next_date}
+        # 당일 종가 매수이므로 마지막 날도 포함
+        for i, date in enumerate(target_dates):
+            # 당일(매수일) 기준으로 청산된 종목 제거
+            holdings = {code: exit_date for code, exit_date in holdings.items() if exit_date > date}
 
             results, holdings, stats = run_single_date(
                 engine, cond_parser, df, trading_days, date,

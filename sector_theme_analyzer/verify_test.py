@@ -146,15 +146,15 @@ test_stocks = [
     ("001450", "현대해상", 27400, "기간만료", 5), # 기간만료
 ]
 
-# 미래 거래일 계산
+# 미래 거래일 계산 (당일 종가 매수)
 future_days = trading_days[base_idx:base_idx + MAX_DAYS + 1]
-print(f"   매수일 포함 미래 거래일: {future_days}")
+print(f"   신호일 포함 미래 거래일: {future_days}")
 
 def verify_stock(code, name, expected_base_close, expected_exit, expected_days):
     """개별 종목 검증"""
     stock_data = df[df['종목코드'] == code].copy()
 
-    # 기준일 종가
+    # 기준일 종가 (당일 종가 매수가)
     base_row = stock_data[stock_data['날짜'] == BASE_DATE]
     if base_row.empty:
         return False, f"기준일 데이터 없음"
@@ -162,7 +162,7 @@ def verify_stock(code, name, expected_base_close, expected_exit, expected_days):
     base_close = base_row['종가'].values[0]
 
     print(f"\n   [{code}] {name}")
-    print(f"   기준일 종가: {base_close:,.0f}원 (프로그램: {expected_base_close:,}원)")
+    print(f"   매수가(당일 종가): {base_close:,.0f}원 (프로그램: {expected_base_close:,}원)")
 
     # 미래 일별 데이터
     print(f"   {'일차':<6} {'날짜':<12} {'고가':<12} {'저가':<12} {'고가수익률':<12} {'저가수익률':<12}")

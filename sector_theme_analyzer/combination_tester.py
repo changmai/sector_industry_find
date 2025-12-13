@@ -130,8 +130,17 @@ except ImportError:
     print("   [ERROR] numpy가 필요합니다: pip install numpy")
     sys.exit(1)
 
+# Dask 분산 처리 (선택적)
+DASK_AVAILABLE = False
+try:
+    from dask.distributed import Client, LocalCluster
+    import dask
+    DASK_AVAILABLE = True
+except ImportError:
+    pass
+
 from condition_engine import ConditionEngine
-from multi_backtester import MultiBacktester
+from multi_backtester import MultiBacktester, warmup_numba_kernel, NUMBA_AVAILABLE
 from itertools import product
 
 
@@ -536,6 +545,8 @@ def _init_worker(tp, sl, max_holding, trailing_start, trailing_offset,
     try:
         _worker_engine = ConditionEngine()
         _worker_engine.load_data()
+        # [최적화] GT 지표 사전계산 (워커당 1회, 이후 필터링만 수행)
+        _worker_engine.precompute_gt_indicators(verbose=False)
     finally:
         sys.stdout = _old_stdout
 
@@ -551,12 +562,16 @@ def _init_worker(tp, sl, max_holding, trailing_start, trailing_offset,
         time_cut_min_return=time_cut_min_return
     )
 
+    # Numba JIT 워밍업 (첫 호출 시 컴파일 오버헤드 제거)
+    warmup_numba_kernel()
+
     # 파라미터 로드
     _worker_params = load_default_params()
 
 
 def _test_single_combo(args):
     """단일 조합 테스트 (워커에서 실행)"""
+    import gc
     expr, start_date, end_date, tp, sl, min_trades = args
 
     global _worker_engine, _worker_backtester, _worker_params
@@ -565,6 +580,242 @@ def _test_single_combo(args):
         report = _worker_backtester.run(
             start_date, end_date, expr, _worker_params, verbose=False
         )
+
+        result = {
+            'expression': expr,
+            'total_trades': report.total_trades if report else 0,
+            'win_rate': report.win_rate if report else 0,
+            'avg_return': report.avg_return if report else 0,
+            'total_return': report.total_return if report else 0,
+            'avg_holding_days': report.avg_holding_days if report else 0,
+            'tp': tp,
+            'sl': sl,
+            'valid': (report.total_trades >= min_trades) if report else False
+        }
+
+        # [최적화] 테스트 완료 후 캐시 클리어 및 GC 강제 (메모리 누수 방지)
+        _worker_engine.clear_cache()
+        gc.collect()
+
+        return result
+    except Exception as e:
+        # 에러 시에도 캐시 클리어
+        _worker_engine.clear_cache()
+        gc.collect()
+
+        return {
+            'expression': expr,
+            'total_trades': 0,
+            'win_rate': 0,
+            'avg_return': 0,
+            'total_return': 0,
+            'avg_holding_days': 0,
+            'tp': tp,
+            'sl': sl,
+            'valid': False,
+            'error': str(e)
+        }
+
+
+# ============================================================================
+# Mode 3 (--param-grid) 병렬 처리용 워커 함수들
+# ============================================================================
+_pg_worker_engine = None
+_pg_worker_backtester = None
+_pg_worker_base_params = None
+_pg_worker_condition_expr = None
+_pg_worker_conditions = None
+_pg_worker_min_trades = None
+
+
+def _init_param_grid_worker(tp, sl, max_holding, trailing_start, trailing_offset,
+                            time_cut_days, time_cut_min_return, base_params,
+                            condition_expr, conditions, min_trades):
+    """파라미터 그리드 워커 프로세스 초기화"""
+    global _pg_worker_engine, _pg_worker_backtester, _pg_worker_base_params
+    global _pg_worker_condition_expr, _pg_worker_conditions, _pg_worker_min_trades
+
+    # 데이터 로드 (프로세스당 1회) - 워커에서는 출력 억제
+    import sys
+    import io
+    _old_stdout = sys.stdout
+    sys.stdout = io.StringIO()
+    try:
+        _pg_worker_engine = ConditionEngine()
+        _pg_worker_engine.load_data()
+        # [최적화] GT 지표 사전계산 (워커당 1회)
+        _pg_worker_engine.precompute_gt_indicators(verbose=False)
+    finally:
+        sys.stdout = _old_stdout
+
+    # 백테스터 생성
+    _pg_worker_backtester = MultiBacktester(
+        _pg_worker_engine,
+        stop_loss=sl,
+        take_profit=tp,
+        max_holding_days=max_holding,
+        trailing_start=trailing_start,
+        trailing_offset=trailing_offset,
+        time_cut_days=time_cut_days,
+        time_cut_min_return=time_cut_min_return
+    )
+
+    # Numba JIT 워밍업 (첫 호출 시 컴파일 오버헤드 제거)
+    warmup_numba_kernel()
+
+    # 공유 파라미터 저장
+    _pg_worker_base_params = base_params
+    _pg_worker_condition_expr = condition_expr
+    _pg_worker_conditions = conditions
+    _pg_worker_min_trades = min_trades
+
+
+def _test_single_param_combo(args):
+    """단일 파라미터 조합 테스트 (워커에서 실행)"""
+    import gc
+    params, start_date, end_date, tp, sl = args
+
+    global _pg_worker_engine, _pg_worker_backtester, _pg_worker_base_params
+    global _pg_worker_condition_expr, _pg_worker_conditions, _pg_worker_min_trades
+
+    try:
+        report = _pg_worker_backtester.run(
+            start_date, end_date, _pg_worker_condition_expr, params, verbose=False
+        )
+
+        param_diff = get_param_diff_str(params, _pg_worker_base_params, _pg_worker_conditions)
+
+        result = {
+            'expression': _pg_worker_condition_expr,
+            'params': param_diff,
+            'params_dict': {k: v for k, v in params.items() if k in [c.upper() for c in _pg_worker_conditions]},
+            'total_trades': report.total_trades if report else 0,
+            'win_rate': report.win_rate if report else 0,
+            'avg_return': report.avg_return if report else 0,
+            'total_return': report.total_return if report else 0,
+            'avg_holding_days': report.avg_holding_days if report else 0,
+            'tp': tp,
+            'sl': sl,
+            'valid': (report.total_trades >= _pg_worker_min_trades) if report else False
+        }
+
+        # [최적화] 테스트 완료 후 캐시 클리어 및 GC 강제
+        _pg_worker_engine.clear_cache()
+        gc.collect()
+
+        return result
+    except Exception as e:
+        _pg_worker_engine.clear_cache()
+        gc.collect()
+
+        return {
+            'expression': _pg_worker_condition_expr,
+            'params': str(params),
+            'params_dict': {},
+            'total_trades': 0,
+            'win_rate': 0,
+            'avg_return': 0,
+            'total_return': 0,
+            'avg_holding_days': 0,
+            'tp': tp,
+            'sl': sl,
+            'valid': False,
+            'error': str(e)
+        }
+
+
+# ============================================================================
+# Dask 분산 처리 함수들 (메모리 공유 + 클러스터 확장)
+# ============================================================================
+_dask_client = None
+_dask_df_future = None
+_dask_stocks_future = None
+_dask_params = None
+
+
+def _init_dask_cluster(workers: int = 8):
+    """
+    Dask 로컬 클러스터 초기화 (데이터 1회 로드 후 공유)
+
+    Returns:
+        client: Dask Client
+        df_future: scatter된 DataFrame Future
+        stocks_future: scatter된 stocks Future
+    """
+    global _dask_client, _dask_df_future, _dask_stocks_future, _dask_params
+
+    if not DASK_AVAILABLE:
+        raise ImportError("Dask가 설치되지 않았습니다: pip install dask[distributed]")
+
+    print(f"   [DASK] 클러스터 초기화 중 (워커: {workers}개)...")
+
+    # 로컬 클러스터 생성
+    cluster = LocalCluster(
+        n_workers=workers,
+        threads_per_worker=1,
+        memory_limit='auto',
+        silence_logs=40  # WARNING 이상만 출력
+    )
+    _dask_client = Client(cluster)
+
+    # 데이터 1회 로드
+    print("   [DASK] 데이터 로드 중...")
+    engine = ConditionEngine()
+    engine.load_data()
+
+    # 대용량 데이터를 워커들에 scatter (복사 없이 참조)
+    print("   [DASK] 데이터 scatter 중...")
+    _dask_df_future = _dask_client.scatter(engine.df_daily, broadcast=True)
+    _dask_stocks_future = _dask_client.scatter(engine.stocks, broadcast=True)
+    _dask_params = load_default_params()
+
+    print(f"   [DASK] 클러스터 준비 완료")
+    print(f"   [DASK] 대시보드: {_dask_client.dashboard_link}")
+
+    return _dask_client, _dask_df_future, _dask_stocks_future
+
+
+def _shutdown_dask_cluster():
+    """Dask 클러스터 종료"""
+    global _dask_client
+    if _dask_client is not None:
+        _dask_client.close()
+        _dask_client = None
+        print("   [DASK] 클러스터 종료됨")
+
+
+def _test_single_combo_dask(args):
+    """
+    Dask 워커에서 실행되는 단일 조합 테스트 함수
+
+    Note: Dask submit으로 호출되며, 공유된 데이터를 사용
+    """
+    expr, start_date, end_date, tp, sl, max_holding, \
+        trailing_start, trailing_offset, time_cut_days, time_cut_min_return, \
+        min_trades, df_daily, stocks, params = args
+
+    try:
+        # 공유 데이터로 엔진 생성
+        engine = ConditionEngine(preloaded_df=df_daily, preloaded_stocks=stocks)
+        engine.load_data()  # preloaded 모드에서도 load_data 호출 필요
+
+        # 백테스터 생성
+        backtester = MultiBacktester(
+            engine,
+            stop_loss=sl,
+            take_profit=tp,
+            max_holding_days=max_holding,
+            trailing_start=trailing_start,
+            trailing_offset=trailing_offset,
+            time_cut_days=time_cut_days,
+            time_cut_min_return=time_cut_min_return
+        )
+
+        # Numba 워밍업
+        warmup_numba_kernel()
+
+        # 백테스트 실행
+        report = backtester.run(start_date, end_date, expr, params, verbose=False)
 
         return {
             'expression': expr,
@@ -590,6 +841,353 @@ def _test_single_combo(args):
             'valid': False,
             'error': str(e)
         }
+
+
+def run_parallel_tests_dask(
+    combinations_list: list[str],
+    start_date: str,
+    end_date: str,
+    tp: float,
+    sl: float,
+    min_trades: int,
+    max_holding: int = 14,
+    trailing_start: float = None,
+    trailing_offset: float = None,
+    time_cut_days: int = None,
+    time_cut_min_return: float = None,
+    workers: int = 8
+) -> list[dict]:
+    """
+    Dask 기반 병렬 조합 테스트 (메모리 공유)
+
+    Args:
+        combinations_list: 테스트할 조건 조합 리스트
+        workers: 워커 수
+
+    Returns:
+        list[dict]: 각 조합의 결과
+    """
+    if not DASK_AVAILABLE:
+        print("   [ERROR] Dask가 설치되지 않았습니다. multiprocessing으로 대체합니다.")
+        return None
+
+    total = len(combinations_list)
+    print(f"\n[조합 테스트 - Dask] {total}개 조합, {workers}개 워커")
+    print("-" * 80)
+
+    start_time = time.time()
+
+    try:
+        # 클러스터 초기화
+        client, df_future, stocks_future = _init_dask_cluster(workers)
+        params = _dask_params
+
+        # 작업 생성
+        futures = []
+        for expr in combinations_list:
+            args = (
+                expr, start_date, end_date, tp, sl, max_holding,
+                trailing_start, trailing_offset, time_cut_days, time_cut_min_return,
+                min_trades, df_future, stocks_future, params
+            )
+            future = client.submit(_test_single_combo_dask, args)
+            futures.append(future)
+
+        # 결과 수집 (완료되는 대로)
+        results = []
+        for i, future in enumerate(dask.distributed.as_completed(futures), 1):
+            result = future.result()
+            results.append(result)
+
+            elapsed = time.time() - start_time
+            eta = elapsed / i * (total - i) if i > 0 else 0
+
+            status = "OK" if result['valid'] else f"거래수 부족({result['total_trades']}건)"
+            print(f"   [{i:>3}/{total}] {result['expression']:<30} → "
+                  f"거래 {result['total_trades']:>4}건, 승률 {result['win_rate']:>5.1f}%, "
+                  f"수익률 {result['avg_return']:>+6.2f}% ({status})")
+
+        total_time = time.time() - start_time
+        print(f"\n   [DASK] 완료: {total_time:.1f}초 ({total}개 조합)")
+
+        return results
+
+    except Exception as e:
+        print(f"   [DASK ERROR] {e}")
+        return None
+
+    finally:
+        _shutdown_dask_cluster()
+
+
+def run_parallel_param_grid_tests(
+    base_params: dict,
+    param_combinations: list[dict],
+    condition_expr: str,
+    conditions: list[str],
+    start_date: str,
+    end_date: str,
+    tp: float,
+    sl: float,
+    min_trades: int,
+    max_holding: int = 14,
+    trailing_start: float = None,
+    trailing_offset: float = None,
+    time_cut_days: int = None,
+    time_cut_min_return: float = None,
+    workers: int = 4
+) -> list[dict]:
+    """
+    멀티프로세싱으로 파라미터 그리드 테스트 (병렬 실행)
+
+    Args:
+        param_combinations: 테스트할 파라미터 조합 리스트
+        workers: 병렬 워커 수
+
+    Returns:
+        list[dict]: 각 파라미터 조합의 결과
+    """
+    total = len(param_combinations)
+    print(f"\n[파라미터 조합 테스트 - 병렬] 조건: {condition_expr}")
+    print(f"   총 {total}개 파라미터 조합, {workers}개 워커 사용")
+    print("-" * 80)
+
+    start_time = time.time()
+
+    # 작업 목록 생성
+    tasks = [
+        (params, start_date, end_date, tp, sl)
+        for params in param_combinations
+    ]
+
+    results = []
+
+    # 멀티프로세싱 풀 생성
+    with mp.Pool(
+        processes=workers,
+        initializer=_init_param_grid_worker,
+        initargs=(tp, sl, max_holding, trailing_start, trailing_offset,
+                  time_cut_days, time_cut_min_return, base_params,
+                  condition_expr, conditions, min_trades),
+        maxtasksperchild=50
+    ) as pool:
+        # imap_unordered로 완료되는 대로 처리
+        for i, result in enumerate(pool.imap_unordered(_test_single_param_combo, tasks), 1):
+            results.append(result)
+            elapsed = time.time() - start_time
+
+            # 프로그레스 바 출력
+            print_progress_bar(i, total, elapsed)
+
+            # 상세 결과 출력
+            status = "OK" if result['valid'] else f"거래수 부족({result['total_trades']}건)"
+            params_str = result.get('params', '')[:50]
+            print(f"\n   [{i:>3}/{total}] {params_str:<50} → "
+                  f"거래 {result['total_trades']:>4}건, 승률 {result['win_rate']:>5.1f}%, "
+                  f"수익률 {result['avg_return']:>+6.2f}% ({status})")
+
+    print()  # 마지막 줄바꿈
+    return results
+
+
+# ============================================================================
+# Mode 2 (--optimize) 병렬 처리용 워커 함수들
+# ============================================================================
+_opt_worker_engine = None
+_opt_worker_params = None
+
+
+def _init_optimize_worker(max_holding, trailing_start, trailing_offset,
+                          time_cut_days, time_cut_min_return, params):
+    """TP/SL 최적화 워커 프로세스 초기화"""
+    global _opt_worker_engine, _opt_worker_params
+
+    # 데이터 로드 (프로세스당 1회) - 워커에서는 출력 억제
+    import sys
+    import io
+    _old_stdout = sys.stdout
+    sys.stdout = io.StringIO()
+    try:
+        _opt_worker_engine = ConditionEngine()
+        _opt_worker_engine.load_data()
+        # [최적화] GT 지표 사전계산 (워커당 1회)
+        _opt_worker_engine.precompute_gt_indicators(verbose=False)
+    finally:
+        sys.stdout = _old_stdout
+
+    # Numba JIT 워밍업
+    warmup_numba_kernel()
+
+    # 파라미터 저장
+    _opt_worker_params = params
+
+
+def _test_single_tpsl_combo(args):
+    """단일 TP/SL 조합 테스트 (워커에서 실행)"""
+    import gc
+    expr, start_date, end_date, tp, sl, min_trades, max_holding, \
+        trailing_start, trailing_offset, time_cut_days, time_cut_min_return = args
+
+    global _opt_worker_engine, _opt_worker_params
+
+    try:
+        # 백테스터 생성 (TP/SL이 다르므로 매번 새로 생성)
+        backtester = MultiBacktester(
+            _opt_worker_engine,
+            stop_loss=sl,
+            take_profit=tp,
+            max_holding_days=max_holding,
+            trailing_start=trailing_start,
+            trailing_offset=trailing_offset,
+            time_cut_days=time_cut_days,
+            time_cut_min_return=time_cut_min_return
+        )
+
+        report = backtester.run(
+            start_date, end_date, expr, _opt_worker_params, verbose=False
+        )
+
+        result = {
+            'expression': expr,
+            'total_trades': report.total_trades if report else 0,
+            'win_rate': report.win_rate if report else 0,
+            'avg_return': report.avg_return if report else 0,
+            'total_return': report.total_return if report else 0,
+            'avg_holding_days': report.avg_holding_days if report else 0,
+            'tp': tp,
+            'sl': sl,
+            'valid': (report.total_trades >= min_trades) if report else False
+        }
+
+        # [최적화] 테스트 완료 후 캐시 클리어 및 GC 강제
+        _opt_worker_engine.clear_cache()
+        gc.collect()
+
+        return result
+    except Exception as e:
+        _opt_worker_engine.clear_cache()
+        gc.collect()
+
+        return {
+            'expression': expr,
+            'total_trades': 0,
+            'win_rate': 0,
+            'avg_return': 0,
+            'total_return': 0,
+            'avg_holding_days': 0,
+            'tp': tp,
+            'sl': sl,
+            'valid': False,
+            'error': str(e)
+        }
+
+
+def run_parallel_optimized_tests(
+    params: dict,
+    combos: list[str],
+    start_date: str,
+    end_date: str,
+    tp_min: float,
+    tp_max: float,
+    sl_min: float,
+    sl_max: float,
+    step: float,
+    min_trades: int,
+    max_holding: int = 14,
+    trailing_start: float = None,
+    trailing_offset: float = None,
+    time_cut_days: int = None,
+    time_cut_min_return: float = None,
+    workers: int = 4
+) -> list[dict]:
+    """
+    멀티프로세싱으로 TP/SL 최적화 테스트 (병렬 실행)
+
+    각 조합 x 각 TP/SL 조합을 병렬로 테스트하고,
+    조합별로 가장 좋은 TP/SL 결과를 반환합니다.
+
+    Returns:
+        list[dict]: 각 조합의 최적 TP/SL 결과
+    """
+    # TP/SL 조합 생성
+    tp_values = np.arange(tp_min, tp_max + step, step)
+    sl_values = np.arange(sl_min, sl_max + step, step)
+    tpsl_count = len(tp_values) * len(sl_values)
+    total_tests = len(combos) * tpsl_count
+
+    print(f"\n[TP/SL 최적화 테스트 - 병렬] 총 {len(combos)}개 조합 x {tpsl_count} TP/SL = {total_tests}개 테스트")
+    print(f"   {workers}개 워커 사용")
+    print("-" * 80)
+
+    start_time = time.time()
+
+    # 작업 목록 생성: (조합, TP, SL) 모든 조합
+    tasks = []
+    for expr in combos:
+        for tp in tp_values:
+            for sl in sl_values:
+                tasks.append((
+                    expr, start_date, end_date, float(tp), float(sl), min_trades,
+                    max_holding, trailing_start, trailing_offset, time_cut_days, time_cut_min_return
+                ))
+
+    # 결과 수집용 딕셔너리 (조합별로 최적 결과 저장)
+    combo_results = {expr: [] for expr in combos}
+
+    # 멀티프로세싱 풀 생성
+    with mp.Pool(
+        processes=workers,
+        initializer=_init_optimize_worker,
+        initargs=(max_holding, trailing_start, trailing_offset,
+                  time_cut_days, time_cut_min_return, params),
+        maxtasksperchild=50
+    ) as pool:
+        # imap_unordered로 완료되는 대로 처리
+        for i, result in enumerate(pool.imap_unordered(_test_single_tpsl_combo, tasks), 1):
+            expr = result['expression']
+            combo_results[expr].append(result)
+
+            elapsed = time.time() - start_time
+
+            # 프로그레스 바 출력 (10개마다)
+            if i % 10 == 0 or i == len(tasks):
+                print_progress_bar(i, len(tasks), elapsed)
+
+    print()  # 마지막 줄바꿈
+
+    # 각 조합별 최적 결과 선택 (평균수익률 기준)
+    results = []
+    for expr in combos:
+        expr_results = combo_results[expr]
+        if expr_results:
+            # 평균수익률 기준 정렬
+            valid_results = [r for r in expr_results if r['valid']]
+            if valid_results:
+                best = max(valid_results, key=lambda x: x['avg_return'])
+            else:
+                best = max(expr_results, key=lambda x: x['total_trades'])
+            results.append(best)
+        else:
+            results.append({
+                'expression': expr,
+                'total_trades': 0,
+                'win_rate': 0,
+                'avg_return': 0,
+                'total_return': 0,
+                'avg_holding_days': 0,
+                'tp': tp_min,
+                'sl': sl_min,
+                'valid': False
+            })
+
+        # 조합별 결과 출력
+        r = results[-1]
+        status = "OK" if r['valid'] else f"거래수 부족({r['total_trades']}건)"
+        print(f"   {expr:<30} → 최적 TP={r['tp']:.0f}%/SL={r['sl']:.0f}% | "
+              f"거래 {r['total_trades']:>4}건, 승률 {r['win_rate']:>5.1f}%, "
+              f"수익률 {r['avg_return']:>+6.2f}% ({status})")
+
+    return results
 
 
 def generate_combinations(
@@ -761,13 +1359,19 @@ def run_parallel_tests(
     results = []
     completed = 0
 
+    # Windows에서 데드락 방지: maxtasksperchild로 워커 주기적 재시작
+    actual_workers = workers
+
     with mp.Pool(
-        processes=workers,
+        processes=actual_workers,
         initializer=_init_worker,
-        initargs=init_args
+        initargs=init_args,
+        maxtasksperchild=50  # 50개 작업 후 워커 재시작 (메모리 누수/데드락 방지)
     ) as pool:
         # imap_unordered로 완료되는 순서대로 결과 수집
-        for result in pool.imap_unordered(_test_single_combo, task_args):
+        # chunksize를 설정하여 IPC 오버헤드 감소
+        chunksize = max(1, total // (actual_workers * 4))
+        for result in pool.imap_unordered(_test_single_combo, task_args, chunksize=chunksize):
             completed += 1
             elapsed = time.time() - start_time
             results.append(result)
@@ -1448,8 +2052,10 @@ def parse_args():
                         help='로그 저장 디렉토리 (기본: ./logs)')
 
     # 병렬 처리 옵션
-    parser.add_argument('--workers', '-w', type=int, default=1,
-                        help='병렬 워커 수 (기본: 1, 0=자동=CPU코어수)')
+    parser.add_argument('--workers', '-w', type=int, default=6,
+                        help='병렬 워커 수 (기본: 6, 0=자동=CPU코어수)')
+    parser.add_argument('--use-dask', action='store_true',
+                        help='Dask 분산 처리 사용 (메모리 공유, 클러스터 확장)')
 
     return parser.parse_args()
 
@@ -1569,18 +2175,30 @@ def main():
     workers = args.workers
     if workers == 0:
         workers = mp.cpu_count()
-    if workers > 1 and not args.optimize:
+    if workers > 1:
         print(f"   병렬 처리: {workers}개 워커")
     print("=" * 80)
 
-    # 병렬 모드 여부 결정 (최적화 모드, 파라미터 그리드 모드, 자동 최적화 모드는 아직 병렬 미지원)
-    use_parallel = workers > 1 and not args.optimize and not param_grid_mode and not args.auto_optimize
+    # 병렬 모드 여부 결정 (모든 모드에서 workers > 1이면 병렬 처리)
+    # auto_optimize는 내부적으로 순차 처리 유지 (2단계 구조 때문)
+    use_parallel = workers > 1 and not args.auto_optimize
 
-    if use_parallel:
+    # Dask 모드 확인
+    use_dask = getattr(args, 'use_dask', False) and DASK_AVAILABLE
+    if getattr(args, 'use_dask', False) and not DASK_AVAILABLE:
+        print("   [WARN] Dask가 설치되지 않았습니다. multiprocessing으로 대체합니다.")
+
+    if use_dask:
+        # Dask 모드: 메모리 공유 + 클러스터 확장
+        print("\n[1] Dask 모드 - 데이터 공유 방식 사용")
+        engine = None
+        params = load_default_params()
+    elif use_parallel:
         # 병렬 모드: 각 워커에서 데이터 로드
         print("\n[1] 병렬 모드 - 워커에서 데이터 로드 예정")
         engine = None
-        params = None
+        # 파라미터는 워커에 전달하기 위해 로드
+        params = load_default_params()
     else:
         # 순차 모드: 메인 프로세스에서 데이터 로드
         print("\n[1] 데이터 로드 중...")
@@ -1588,6 +2206,9 @@ def main():
         if not engine.load_data():
             print("   [ERROR] 데이터 로드 실패")
             sys.exit(1)
+
+        # [최적화] GT 지표 사전계산 (1회만 실행, 이후 필터링만 수행)
+        engine.precompute_gt_indicators(verbose=True)
 
         # 파라미터 로드
         params = load_default_params()
@@ -1674,9 +2295,71 @@ def main():
         param_combinations = generate_param_combinations(param_grid, params, all_conditions)
         print(f"   총 {len(param_combinations)}개 파라미터 조합 생성됨")
 
-        results = run_param_grid_tests(
-            engine, params, param_combinations,
-            condition_expr, all_conditions,
+        if use_parallel:
+            # 병렬 파라미터 그리드 테스트
+            results = run_parallel_param_grid_tests(
+                params, param_combinations,
+                condition_expr, all_conditions,
+                args.start_date, args.end_date,
+                args.tp, args.sl,
+                args.min_trades,
+                args.max_holding,
+                args.trailing_start,
+                args.trailing_offset,
+                args.time_cut_days,
+                args.time_cut_min_return,
+                workers=workers
+            )
+        else:
+            # 순차 파라미터 그리드 테스트
+            results = run_param_grid_tests(
+                engine, params, param_combinations,
+                condition_expr, all_conditions,
+                args.start_date, args.end_date,
+                args.tp, args.sl,
+                args.min_trades,
+                args.max_holding,
+                args.trailing_start,
+                args.trailing_offset,
+                args.time_cut_days,
+                args.time_cut_min_return
+            )
+    elif args.optimize:
+        if use_parallel:
+            # 병렬 TP/SL 최적화 테스트
+            results = run_parallel_optimized_tests(
+                params, combos,
+                args.start_date, args.end_date,
+                args.tp_min, args.tp_max,
+                args.sl_min, args.sl_max,
+                args.step,
+                args.min_trades,
+                args.max_holding,
+                args.trailing_start,
+                args.trailing_offset,
+                args.time_cut_days,
+                args.time_cut_min_return,
+                workers=workers
+            )
+        else:
+            # 순차 TP/SL 최적화 테스트
+            results = run_optimized_tests(
+                engine, params, combos,
+                args.start_date, args.end_date,
+                args.tp_min, args.tp_max,
+                args.sl_min, args.sl_max,
+                args.step,
+                args.min_trades,
+                args.max_holding,
+                args.trailing_start,
+                args.trailing_offset,
+                args.time_cut_days,
+                args.time_cut_min_return
+            )
+    elif use_dask:
+        # Dask 병렬 테스트 (메모리 공유)
+        results = run_parallel_tests_dask(
+            combos,
             args.start_date, args.end_date,
             args.tp, args.sl,
             args.min_trades,
@@ -1684,24 +2367,26 @@ def main():
             args.trailing_start,
             args.trailing_offset,
             args.time_cut_days,
-            args.time_cut_min_return
+            args.time_cut_min_return,
+            workers=workers
         )
-    elif args.optimize:
-        results = run_optimized_tests(
-            engine, params, combos,
-            args.start_date, args.end_date,
-            args.tp_min, args.tp_max,
-            args.sl_min, args.sl_max,
-            args.step,
-            args.min_trades,
-            args.max_holding,
-            args.trailing_start,
-            args.trailing_offset,
-            args.time_cut_days,
-            args.time_cut_min_return
-        )
+        # Dask 실패 시 multiprocessing으로 대체
+        if results is None:
+            print("   [WARN] Dask 실행 실패, multiprocessing으로 재시도...")
+            results = run_parallel_tests(
+                combos,
+                args.start_date, args.end_date,
+                args.tp, args.sl,
+                args.min_trades,
+                args.max_holding,
+                args.trailing_start,
+                args.trailing_offset,
+                args.time_cut_days,
+                args.time_cut_min_return,
+                workers=workers
+            )
     elif use_parallel:
-        # 병렬 테스트
+        # 병렬 테스트 (multiprocessing)
         results = run_parallel_tests(
             combos,
             args.start_date, args.end_date,
